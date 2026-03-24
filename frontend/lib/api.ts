@@ -11,7 +11,7 @@ import type {
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-  "https://auto-analytics-ai-api.onrender.com/api/v1";
+  "/api/proxy/api/v1";
 const API_ROOT_URL = API_BASE_URL.replace(/\/api\/v1$/, "");
 
 type RequestOptions = {
@@ -73,10 +73,10 @@ function getDefaultRetries(method: string): number {
 
 function getFriendlyNetworkMessage(method: string): string {
   if (method === "POST") {
-    return "We couldn't reach the analytics service. Please check your internet connection and try again in a few seconds.";
+    return "The analytics service is temporarily unavailable. Please wait a few seconds and try again.";
   }
 
-  return "We are having trouble connecting to the analytics service right now. Please wait a moment and try again.";
+  return "We are reconnecting to the analytics service. Please wait a moment and try again.";
 }
 
 function getFriendlyTimeoutMessage(path: string): string {
