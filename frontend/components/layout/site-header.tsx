@@ -13,8 +13,11 @@ export function SiteHeader() {
     <header className="site-header">
       <div className="shell site-header__inner">
         <Link href="/" className="brand">
-          <span className="brand__badge">AI</span>
-          <span>
+          <span className="brand__mark" aria-hidden="true">
+            <span className="brand__heart" />
+            <span className="brand__letters">HP</span>
+          </span>
+          <span className="brand__copy">
             <strong>Auto Analytics AI</strong>
             <small>Upload data. Get decisions.</small>
           </span>
@@ -44,4 +47,3 @@ export function SiteHeader() {
     </header>
   );
 }
-

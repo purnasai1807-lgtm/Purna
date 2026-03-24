@@ -81,6 +81,11 @@ main {
   gap: 0.9rem;
 }
 
+.brand__copy {
+  display: grid;
+  gap: 0.15rem;
+}
+
 .brand strong {
   display: block;
   font-family: var(--font-heading);
@@ -93,17 +98,55 @@ main {
   font-size: 0.85rem;
 }
 
-.brand__badge {
+.brand__mark {
+  position: relative;
   display: grid;
   place-items: center;
-  width: 42px;
-  height: 42px;
-  border-radius: 14px;
-  background: linear-gradient(135deg, var(--accent), var(--warm));
+  width: 58px;
+  height: 54px;
+  flex: 0 0 auto;
+}
+
+.brand__heart {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  transform: rotate(-45deg);
+  border-radius: 10px 10px 4px 4px;
+  background: linear-gradient(135deg, var(--warm) 0%, #ef4444 42%, var(--accent) 100%);
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.18);
+}
+
+.brand__heart::before,
+.brand__heart::after {
+  content: "";
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: inherit;
+}
+
+.brand__heart::before {
+  top: -17px;
+  left: 0;
+}
+
+.brand__heart::after {
+  top: 0;
+  left: 17px;
+}
+
+.brand__letters {
+  position: relative;
+  z-index: 1;
+  margin-top: -0.1rem;
   color: white;
   font-family: var(--font-heading);
-  font-weight: 700;
-  box-shadow: var(--shadow);
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-shadow: 0 2px 10px rgba(15, 23, 42, 0.22);
 }
 
 .site-nav {
@@ -641,6 +684,26 @@ main {
   .site-nav {
     width: 100%;
     justify-content: space-between;
+  }
+
+  .brand__mark {
+    width: 52px;
+    height: 48px;
+  }
+
+  .brand__heart,
+  .brand__heart::before,
+  .brand__heart::after {
+    width: 30px;
+    height: 30px;
+  }
+
+  .brand__heart::before {
+    top: -15px;
+  }
+
+  .brand__heart::after {
+    left: 15px;
   }
 }
 
