@@ -25,6 +25,13 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 
+def build_one_hot_encoder() -> OneHotEncoder:
+    try:
+        return OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+    except TypeError:
+        return OneHotEncoder(handle_unknown="ignore", sparse=False)
+
+
 def build_modeling_summary(dataframe: pd.DataFrame, target_column: str | None) -> dict[str, Any]:
     prepared_frame = prepare_modeling_frame(dataframe)
     if prepared_frame.shape[0] < 8:
@@ -100,7 +107,7 @@ def build_preprocessor(feature_frame: pd.DataFrame) -> tuple[ColumnTransformer, 
                 Pipeline(
                     steps=[
                         ("imputer", SimpleImputer(strategy="most_frequent")),
-                        ("encoder", OneHotEncoder(handle_unknown="ignore", sparse=False)),
+                        ("encoder", build_one_hot_encoder()),
                     ]
                 ),
                 categorical_features,
