@@ -13,11 +13,6 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
   "/api/proxy/api/v1";
 const API_ROOT_URL = API_BASE_URL.replace(/\/api\/v1$/, "");
-const DIRECT_UPLOAD_API_BASE_URL =
-  process.env.NEXT_PUBLIC_DIRECT_BACKEND_API_URL?.replace(/\/$/, "") ??
-  (API_BASE_URL.startsWith("/")
-    ? "https://auto-analytics-ai-api.onrender.com/api/v1"
-    : API_BASE_URL);
 
 type RequestOptions = {
   method?: string;
@@ -58,7 +53,7 @@ function buildUrl(path: string, baseUrl: string): string {
 
 function getDefaultTimeout(method: string, path: string): number {
   if (path.includes("/analysis/upload")) {
-    return 240_000;
+    return 600_000;
   }
 
   if (path.includes("/analysis/manual") || path.includes("/download-pdf")) {
@@ -157,6 +152,18 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+async function warmAnalyticsService(): Promise<void> {
+  try {
+    await fetchResponse("/health", {
+      baseUrl: API_ROOT_URL,
+      retries: 2,
+      timeoutMs: 20_000
+    });
+  } catch {
+    // If the warm-up check fails, the real upload request still gets a chance.
+  }
+}
+
 async function fetchResponse(path: string, options: RequestOptions = {}): Promise<Response> {
   const method = options.method ?? "GET";
   const timeoutMs = options.timeoutMs ?? getDefaultTimeout(method, path);
@@ -253,13 +260,15 @@ export function uploadDataset(
     formData.append("target_column", input.targetColumn);
   }
 
-  return request<ReportDetail>("/analysis/upload", {
-    method: "POST",
-    token,
-    body: formData,
-    timeoutMs: 300_000,
-    baseUrl: DIRECT_UPLOAD_API_BASE_URL
-  });
+  return (async () => {
+    await warmAnalyticsService();
+    return request<ReportDetail>("/analysis/upload", {
+      method: "POST",
+      token,
+      body: formData,
+      timeoutMs: 600_000
+    });
+  })();
 }
 
 export function submitManualEntry(token: string, payload: ManualEntryPayload): Promise<ReportDetail> {

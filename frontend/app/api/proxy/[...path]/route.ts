@@ -1,5 +1,9 @@
 import { NextRequest } from "next/server";
 
+type StreamingFetchOptions = RequestInit & {
+  duplex?: "half";
+};
+
 const REMOVABLE_HEADERS = [
   "connection",
   "content-length",
@@ -44,7 +48,7 @@ async function forwardRequest(
   const targetUrl = buildTargetUrl(context.params.path, request.nextUrl.search);
   const timeoutMs =
     method === "POST" && targetUrl.includes("/analysis/upload")
-      ? 240_000
+      ? 600_000
       : method === "POST"
         ? 120_000
         : 30_000;
@@ -53,13 +57,16 @@ async function forwardRequest(
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(targetUrl, {
+    const requestBody = method === "GET" || method === "HEAD" ? undefined : request.body;
+    const requestOptions: StreamingFetchOptions = {
       method,
       headers: copyRequestHeaders(request),
-      body: method === "GET" || method === "HEAD" ? undefined : await request.arrayBuffer(),
+      body: requestBody,
+      duplex: requestBody ? "half" : undefined,
       cache: "no-store",
       signal: controller.signal,
-    });
+    };
+    const response = await fetch(targetUrl, requestOptions);
 
     return new Response(response.body, {
       status: response.status,
