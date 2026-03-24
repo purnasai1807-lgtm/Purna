@@ -18,6 +18,7 @@ const DIRECT_UPLOAD_API_BASE_URL =
   (API_BASE_URL.startsWith("/")
     ? "https://auto-analytics-ai-api.onrender.com/api/v1"
     : API_BASE_URL);
+const DIRECT_UPLOAD_API_ROOT_URL = DIRECT_UPLOAD_API_BASE_URL.replace(/\/api\/v1$/, "");
 
 type RequestOptions = {
   method?: string;
@@ -157,15 +158,19 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-async function warmAnalyticsService(baseUrl: string): Promise<void> {
-  try {
-    await fetchResponse("/health", {
-      baseUrl,
-      retries: 2,
-      timeoutMs: 20_000
-    });
-  } catch {
-    // If the warm-up check fails, the real upload request still gets a chance.
+async function warmAnalyticsService(): Promise<void> {
+  const targets = [
+    { baseUrl: DIRECT_UPLOAD_API_ROOT_URL, retries: 3, timeoutMs: 90_000 },
+    { baseUrl: API_ROOT_URL, retries: 2, timeoutMs: 30_000 }
+  ];
+
+  for (const target of targets) {
+    try {
+      await fetchResponse("/health", target);
+      return;
+    } catch {
+      // Try the next warm-up target.
+    }
   }
 }
 
@@ -281,8 +286,8 @@ export function uploadDataset(
   };
 
   return (async () => {
-    await warmAnalyticsService(API_ROOT_URL);
-    await wait(1_200);
+    await warmAnalyticsService();
+    await wait(2_500);
 
     try {
       return await request<ReportDetail>("/analysis/upload", {
@@ -297,8 +302,8 @@ export function uploadDataset(
         throw error;
       }
 
-      await wait(2_000);
-      await warmAnalyticsService(API_ROOT_URL);
+      await wait(3_000);
+      await warmAnalyticsService();
       return request<ReportDetail>("/analysis/upload", {
         method: "POST",
         token,
