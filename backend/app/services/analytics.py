@@ -1,34 +1,29 @@
 from __future__ import annotations
-
 import re
 from io import BytesIO
 from typing import Any
-
 import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 from sklearn.linear_model import LinearRegression
-
 from app.services.modeling import build_modeling_summary
 from app.services.visualization import generate_chart_specs
+
+TYPE_INFERENCE_SAMPLE_SIZE = 2000
+CORRELATION_SAMPLE_SIZE = 15000
 
 
 def parse_uploaded_dataframe(filename: str, file_bytes: bytes) -> pd.DataFrame:
     extension = filename.lower().rsplit(".", maxsplit=1)[-1] if "." in filename else ""
     stream = BytesIO(file_bytes)
-
     if extension == "csv":
         return pd.read_csv(stream)
     if extension in {"xlsx", "xls"}:
         return pd.read_excel(stream)
-
     raise ValueError("Unsupported file type. Please upload a CSV or Excel file.")
-
-
 def parse_manual_dataframe(columns: list[str], rows: list[dict[str, Any]]) -> pd.DataFrame:
     if not rows:
         raise ValueError("Manual entry needs at least one populated row.")
-
     dataframe = pd.DataFrame(rows)
     if columns:
         missing_columns = [column for column in columns if column not in dataframe.columns]
@@ -36,8 +31,6 @@ def parse_manual_dataframe(columns: list[str], rows: list[dict[str, Any]]) -> pd
             dataframe[column] = None
         dataframe = dataframe[columns]
     return dataframe
-
-
 def analyze_dataframe(
     dataframe: pd.DataFrame,
     dataset_name: str,
@@ -46,20 +39,16 @@ def analyze_dataframe(
 ) -> dict[str, Any]:
     if dataframe.empty:
         raise ValueError("The dataset is empty after parsing. Please upload a file with records.")
-
     original_dataframe = dataframe.copy()
     cleaned_dataframe, cleaning_summary = clean_dataframe(dataframe.copy())
-
     if cleaned_dataframe.empty:
         raise ValueError("The dataset is empty after cleaning. Please provide rows with actual values.")
-
     normalized_target = normalize_column_name(target_column) if target_column else None
     if normalized_target and normalized_target not in cleaned_dataframe.columns:
         raise ValueError(
             f"Target column '{target_column}' was not found after cleaning. "
             "Use one of the cleaned column names shown in the dashboard."
         )
-
     overview = build_overview(original_dataframe, cleaned_dataframe, cleaning_summary, normalized_target)
     summary_statistics = build_summary_statistics(cleaned_dataframe)
     correlations = build_correlation_analysis(cleaned_dataframe)
@@ -75,7 +64,6 @@ def analyze_dataframe(
         trends=trends,
         modeling=modeling,
     )
-
     return sanitize_for_json(
         {
             "dataset_name": dataset_name,
@@ -93,29 +81,22 @@ def analyze_dataframe(
             "recommendations": recommendations,
         }
     )
-
-
 def clean_dataframe(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
     original_shape = dataframe.shape
     original_columns = [str(column) for column in dataframe.columns]
     standardized_columns = make_unique([normalize_column_name(column) for column in dataframe.columns])
     dataframe.columns = standardized_columns
-
     empty_rows_dropped = int(dataframe.isna().all(axis=1).sum())
     dataframe = dataframe.dropna(how="all")
     all_null_columns = [column for column in dataframe.columns if dataframe[column].isna().all()]
     dataframe = dataframe.drop(columns=all_null_columns)
-
     for column in dataframe.columns:
         if dataframe[column].dtype == object:
             dataframe[column] = dataframe[column].map(lambda value: value.strip() if isinstance(value, str) else value)
-
     dataframe = infer_column_types(dataframe)
-
     missing_before = int(dataframe.isna().sum().sum())
     duplicate_rows_removed = int(dataframe.duplicated().sum())
     dataframe = dataframe.drop_duplicates()
-
     for column in dataframe.columns:
         series = dataframe[column]
         if is_numeric_dtype(series):
@@ -129,10 +110,8 @@ def clean_dataframe(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, An
             mode = series.mode(dropna=True)
             fill_value = mode.iloc[0] if not mode.empty else "Unknown"
             dataframe[column] = series.fillna(fill_value)
-
     missing_after = int(dataframe.isna().sum().sum())
     type_map = {column: str(dtype) for column, dtype in dataframe.dtypes.items()}
-
     return dataframe, {
         "original_shape": {"rows": int(original_shape[0]), "columns": int(original_shape[1])},
         "cleaned_shape": {"rows": int(dataframe.shape[0]), "columns": int(dataframe.shape[1])},
@@ -144,32 +123,29 @@ def clean_dataframe(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, An
         "missing_values_after": missing_after,
         "detected_data_types": type_map,
     }
-
-
 def infer_column_types(dataframe: pd.DataFrame) -> pd.DataFrame:
     for column in dataframe.columns:
         series = dataframe[column]
         if is_numeric_dtype(series) or is_datetime64_any_dtype(series):
             continue
-
         non_null = series.dropna()
         if non_null.empty:
             continue
-
-        text_values = non_null.astype(str)
+        sampled_values = (
+            non_null.sample(n=TYPE_INFERENCE_SAMPLE_SIZE, random_state=42)
+            if len(non_null) > TYPE_INFERENCE_SAMPLE_SIZE
+            else non_null
+        )
+        text_values = sampled_values.astype(str)
         datetime_candidate = pd.to_datetime(text_values, errors="coerce")
         has_datetime_pattern = text_values.str.contains(r"[-/:T]", regex=True).mean() >= 0.5
         if has_datetime_pattern and datetime_candidate.notna().mean() >= 0.85:
             dataframe[column] = pd.to_datetime(series, errors="coerce")
             continue
-
         numeric_candidate = pd.to_numeric(text_values, errors="coerce")
         if numeric_candidate.notna().mean() >= 0.85:
             dataframe[column] = pd.to_numeric(series, errors="coerce")
-
     return dataframe
-
-
 def build_overview(
     original_dataframe: pd.DataFrame,
     cleaned_dataframe: pd.DataFrame,
@@ -191,7 +167,6 @@ def build_overview(
                 "sample_values": sample_values,
             }
         )
-
     return {
         "row_count": int(cleaned_dataframe.shape[0]),
         "column_count": int(cleaned_dataframe.shape[1]),
@@ -202,11 +177,8 @@ def build_overview(
         "columns": profiles,
         "detected_data_types": cleaning_summary.get("detected_data_types", {}),
     }
-
-
 def build_summary_statistics(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
     statistics: list[dict[str, Any]] = []
-
     for column in dataframe.columns:
         series = dataframe[column]
         base_stats: dict[str, Any] = {
@@ -215,7 +187,6 @@ def build_summary_statistics(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
             "non_null_count": int(series.notna().sum()),
             "unique_values": int(series.nunique(dropna=True)),
         }
-
         if is_numeric_dtype(series):
             base_stats.update(
                 {
@@ -240,21 +211,17 @@ def build_summary_statistics(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
             top_value = value_counts.index[0] if not value_counts.empty else None
             top_frequency = int(value_counts.iloc[0]) if not value_counts.empty else 0
             base_stats.update({"top_value": top_value, "top_frequency": top_frequency})
-
         statistics.append(sanitize_for_json(base_stats))
-
     return statistics
-
-
 def build_correlation_analysis(dataframe: pd.DataFrame) -> dict[str, Any]:
     numeric_dataframe = dataframe.select_dtypes(include=[np.number])
+    if len(numeric_dataframe) > CORRELATION_SAMPLE_SIZE:
+        numeric_dataframe = numeric_dataframe.sample(n=CORRELATION_SAMPLE_SIZE, random_state=42)
     if numeric_dataframe.shape[1] < 2:
         return {"available": False, "columns": [], "matrix": [], "strongest_pairs": []}
-
     correlation_matrix = numeric_dataframe.corr().round(3)
     strongest_pairs: list[dict[str, Any]] = []
     columns = list(correlation_matrix.columns)
-
     for index, left_column in enumerate(columns):
         for right_column in columns[index + 1 :]:
             strongest_pairs.append(
@@ -264,24 +231,19 @@ def build_correlation_analysis(dataframe: pd.DataFrame) -> dict[str, Any]:
                     "correlation": round(float(correlation_matrix.loc[left_column, right_column]), 3),
                 }
             )
-
     strongest_pairs = sorted(
         strongest_pairs,
         key=lambda pair: abs(pair["correlation"]),
         reverse=True,
     )[:6]
-
     return {
         "available": True,
         "columns": columns,
         "matrix": sanitize_for_json(correlation_matrix.values.tolist()),
         "strongest_pairs": strongest_pairs,
     }
-
-
 def detect_outliers(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
     outlier_results: list[dict[str, Any]] = []
-
     for column in dataframe.select_dtypes(include=[np.number]).columns:
         series = dataframe[column].dropna()
         if len(series) < 4:
@@ -305,20 +267,15 @@ def detect_outliers(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
                     "upper_bound": round(float(upper_bound), 4),
                 }
             )
-
     return outlier_results
-
-
 def analyze_trends(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
     numeric_columns = list(dataframe.select_dtypes(include=[np.number]).columns)
     if not numeric_columns:
         return []
-
     datetime_columns = [column for column in dataframe.columns if is_datetime64_any_dtype(dataframe[column])]
     ordered_dataframe = dataframe.sort_values(datetime_columns[0]) if datetime_columns else dataframe.copy()
     x_values = np.arange(len(ordered_dataframe)).reshape(-1, 1)
     basis = datetime_columns[0] if datetime_columns else "row_order"
-
     trend_results: list[dict[str, Any]] = []
     for column in numeric_columns[:4]:
         y_values = ordered_dataframe[column].to_numpy(dtype=float)
@@ -332,20 +289,17 @@ def analyze_trends(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
                 }
             )
             continue
-
         model = LinearRegression()
         model.fit(x_values, y_values)
         slope = float(model.coef_[0])
         y_range = float(np.ptp(y_values)) or 1.0
         normalized_slope = slope * max(len(y_values) - 1, 1) / y_range
-
         if normalized_slope > 0.08:
             direction = "upward"
         elif normalized_slope < -0.08:
             direction = "downward"
         else:
             direction = "stable"
-
         trend_results.append(
             {
                 "column": column,
@@ -359,10 +313,7 @@ def analyze_trends(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
                 ),
             }
         )
-
     return trend_results
-
-
 def build_narrative(
     overview: dict[str, Any],
     cleaning: dict[str, Any],
@@ -373,17 +324,14 @@ def build_narrative(
 ) -> tuple[list[str], list[str]]:
     insights: list[str] = []
     recommendations: list[str] = []
-
     insights.append(
         f"The dataset was cleaned from {overview['original_row_count']} rows to "
         f"{overview['row_count']} rows and now contains {overview['column_count']} usable columns."
     )
-
     if cleaning.get("duplicate_rows_removed"):
         insights.append(
             f"{cleaning['duplicate_rows_removed']} duplicate rows were removed before analysis."
         )
-
     missing_before = cleaning.get("missing_values_before", 0)
     missing_after = cleaning.get("missing_values_after", 0)
     if missing_before:
@@ -393,7 +341,6 @@ def build_narrative(
         recommendations.append(
             "Review the columns with imputed values and strengthen data collection rules upstream."
         )
-
     strongest_pairs = correlations.get("strongest_pairs", [])
     if strongest_pairs:
         strongest = strongest_pairs[0]
@@ -404,7 +351,6 @@ def build_narrative(
         recommendations.append(
             "Use the strongest correlated features when prioritizing KPI drivers or dashboard alerts."
         )
-
     if outliers:
         highest_outlier = sorted(outliers, key=lambda item: item["count"], reverse=True)[0]
         insights.append(
@@ -414,10 +360,8 @@ def build_narrative(
         recommendations.append(
             "Inspect the largest outlier columns to confirm whether extreme values are real events or data quality issues."
         )
-
     if trends:
         insights.append(trends[0]["description"])
-
     if modeling.get("status") == "completed":
         mode = modeling.get("mode")
         selected_model = modeling.get("selected_model", "baseline model")
@@ -451,10 +395,7 @@ def build_narrative(
 
     if not recommendations:
         recommendations.append("The dataset is analysis-ready. Review the charts and model recommendations for next steps.")
-
     return insights[:6], recommendations[:6]
-
-
 def sanitize_for_json(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): sanitize_for_json(item) for key, item in value.items()}
@@ -484,15 +425,11 @@ def sanitize_for_json(value: Any) -> Any:
     if pd.isna(value):
         return None
     return value
-
-
 def normalize_column_name(value: Any) -> str:
     text = str(value).strip().lower()
     text = re.sub(r"[^a-z0-9]+", "_", text)
     text = re.sub(r"_+", "_", text).strip("_")
     return text or "column"
-
-
 def make_unique(columns: list[str]) -> list[str]:
     counts: dict[str, int] = {}
     unique_columns: list[str] = []

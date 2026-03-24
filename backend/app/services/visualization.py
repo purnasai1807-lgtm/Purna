@@ -9,9 +9,18 @@ import plotly.express as px
 import plotly.graph_objects as go
 from pandas.api.types import is_datetime64_any_dtype
 
+MAX_VISUALIZATION_ROWS = 5000
+
+
+def get_chart_frame(dataframe: pd.DataFrame, max_rows: int = MAX_VISUALIZATION_ROWS) -> pd.DataFrame:
+    if len(dataframe) <= max_rows:
+        return dataframe
+    return dataframe.sample(n=max_rows, random_state=42).sort_index()
+
 
 def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) -> list[dict[str, Any]]:
     charts: list[dict[str, Any]] = []
+    chart_frame = get_chart_frame(dataframe)
     numeric_columns = list(dataframe.select_dtypes(include=[np.number]).columns)
     datetime_columns = [column for column in dataframe.columns if is_datetime64_any_dtype(dataframe[column])]
     categorical_columns = [
@@ -70,9 +79,9 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
     if numeric_columns:
         numeric_column = numeric_columns[0]
         histogram_figure = px.histogram(
-            dataframe,
+            chart_frame,
             x=numeric_column,
-            nbins=min(30, max(10, len(dataframe) // 5)),
+            nbins=min(30, max(10, len(chart_frame) // 5)),
             title=f"Distribution of {numeric_column}",
         )
         style_figure(histogram_figure)
@@ -87,7 +96,7 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
         )
 
         box_figure = px.box(
-            dataframe,
+            chart_frame,
             y=numeric_column,
             points="outliers",
             title=f"Outlier view for {numeric_column}",
@@ -105,7 +114,7 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
 
     if len(numeric_columns) >= 2:
         scatter_figure = px.scatter(
-            dataframe,
+            chart_frame,
             x=numeric_columns[0],
             y=numeric_columns[1],
             title=f"{numeric_columns[0]} vs {numeric_columns[1]}",
@@ -125,7 +134,7 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
         if datetime_columns:
             date_column = datetime_columns[0]
             trend_frame = (
-                dataframe[[date_column, numeric_columns[0]]]
+                chart_frame[[date_column, numeric_columns[0]]]
                 .dropna()
                 .sort_values(date_column)
                 .groupby(date_column, as_index=False)[numeric_columns[0]]
@@ -139,7 +148,7 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
                 title=f"{numeric_columns[0]} over {date_column}",
             )
         else:
-            trend_frame = dataframe[[numeric_columns[0]]].copy()
+            trend_frame = chart_frame[[numeric_columns[0]]].copy()
             trend_frame["record_index"] = range(1, len(trend_frame) + 1)
             line_figure = px.line(
                 trend_frame,
