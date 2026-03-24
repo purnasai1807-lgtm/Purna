@@ -1,0 +1,23 @@
+  ▲ Next.js 14.2.35
+  - Local:        http://127.0.0.1:3000
+  - Network:      http://127.0.0.1:3000
+  - Environments: .env.local
+
+ ✓ Starting...
+ ✓ Ready in 2.6s
+ ○ Compiling / ...
+ ✓ Compiled / in 4.8s (538 modules)
+ GET / 200 in 4971ms
+ GET / 200 in 41ms
+ GET / 200 in 77ms
+ ✓ Compiled /_not-found in 494ms (509 modules)
+ GET /robots.txt 404 in 729ms
+ GET /robots.txt 404 in 51ms
+ GET / 200 in 101ms
+ ○ Compiling /auth ...
+ ✓ Compiled /auth in 670ms (516 modules)
+ GET / 200 in 157ms
+ ○ Compiling /dashboard ...
+ ✓ Compiled /dashboard in 829ms (530 modules)
+ ○ Compiling /analysis/[id] ...
+ ✓ Compiled /analysis/[id] in 8.8s (575 modules)

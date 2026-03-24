@@ -1,0 +1,21 @@
+# Frontend
+frontend/.next/
+frontend/node_modules/
+frontend/.env.local
+
+# Backend
+backend/.venv/
+backend/.pytest_cache/
+backend/auto_analytics_ai.db
+backend/.packages/
+backend/backend-server.log
+backend/backend-server.err
+
+# Shared
+.env
+__pycache__/
+*.pyc
+.DS_Store
+.tools/
+cloudflared.out
+cloudflared.err
