@@ -1,9 +1,5 @@
 import { NextRequest } from "next/server";
 
-type StreamingFetchOptions = RequestInit & {
-  duplex?: "half";
-};
-
 const REMOVABLE_HEADERS = [
   "connection",
   "content-length",
@@ -57,16 +53,13 @@ async function forwardRequest(
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const requestBody = method === "GET" || method === "HEAD" ? undefined : request.body;
-    const requestOptions: StreamingFetchOptions = {
+    const response = await fetch(targetUrl, {
       method,
       headers: copyRequestHeaders(request),
-      body: requestBody,
-      duplex: requestBody ? "half" : undefined,
+      body: method === "GET" || method === "HEAD" ? undefined : await request.arrayBuffer(),
       cache: "no-store",
       signal: controller.signal,
-    };
-    const response = await fetch(targetUrl, requestOptions);
+    });
 
     return new Response(response.body, {
       status: response.status,

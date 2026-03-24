@@ -13,6 +13,12 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
   "/api/proxy/api/v1";
 const API_ROOT_URL = API_BASE_URL.replace(/\/api\/v1$/, "");
+const DIRECT_UPLOAD_API_BASE_URL =
+  process.env.NEXT_PUBLIC_DIRECT_BACKEND_API_URL?.replace(/\/$/, "") ??
+  (API_BASE_URL.startsWith("/")
+    ? "https://auto-analytics-ai-api.onrender.com/api/v1"
+    : API_BASE_URL);
+const DIRECT_UPLOAD_API_ROOT_URL = DIRECT_UPLOAD_API_BASE_URL.replace(/\/api\/v1$/, "");
 
 type RequestOptions = {
   method?: string;
@@ -152,16 +158,28 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-async function warmAnalyticsService(): Promise<void> {
+async function warmAnalyticsService(baseUrl: string): Promise<void> {
   try {
     await fetchResponse("/health", {
-      baseUrl: API_ROOT_URL,
+      baseUrl,
       retries: 2,
       timeoutMs: 20_000
     });
   } catch {
     // If the warm-up check fails, the real upload request still gets a chance.
   }
+}
+
+function shouldFallbackToProxy(error: unknown): boolean {
+  if (!(error instanceof ApiError)) {
+    return false;
+  }
+
+  return (
+    error.code === "NETWORK_ERROR" ||
+    error.code === "TIMEOUT" ||
+    [502, 503, 504].includes(error.status ?? 0)
+  );
 }
 
 async function fetchResponse(path: string, options: RequestOptions = {}): Promise<Response> {
@@ -251,23 +269,42 @@ export function uploadDataset(
   token: string,
   input: { datasetName?: string; targetColumn?: string }
 ): Promise<ReportDetail> {
-  const formData = new FormData();
-  formData.append("file", file);
-  if (input.datasetName) {
-    formData.append("dataset_name", input.datasetName);
-  }
-  if (input.targetColumn) {
-    formData.append("target_column", input.targetColumn);
-  }
+  const createUploadFormData = (): FormData => {
+    const formData = new FormData();
+    formData.append("file", file);
+    if (input.datasetName) {
+      formData.append("dataset_name", input.datasetName);
+    }
+    if (input.targetColumn) {
+      formData.append("target_column", input.targetColumn);
+    }
+    return formData;
+  };
 
   return (async () => {
-    await warmAnalyticsService();
-    return request<ReportDetail>("/analysis/upload", {
-      method: "POST",
-      token,
-      body: formData,
-      timeoutMs: 600_000
-    });
+    await warmAnalyticsService(DIRECT_UPLOAD_API_ROOT_URL);
+
+    try {
+      return await request<ReportDetail>("/analysis/upload", {
+        method: "POST",
+        token,
+        body: createUploadFormData(),
+        timeoutMs: 600_000,
+        baseUrl: DIRECT_UPLOAD_API_BASE_URL
+      });
+    } catch (error) {
+      if (!shouldFallbackToProxy(error)) {
+        throw error;
+      }
+
+      await warmAnalyticsService(API_ROOT_URL);
+      return request<ReportDetail>("/analysis/upload", {
+        method: "POST",
+        token,
+        body: createUploadFormData(),
+        timeoutMs: 600_000
+      });
+    }
   })();
 }
 
