@@ -18,7 +18,6 @@ const DIRECT_UPLOAD_API_BASE_URL =
   (API_BASE_URL.startsWith("/")
     ? "https://auto-analytics-ai-api.onrender.com/api/v1"
     : API_BASE_URL);
-const DIRECT_UPLOAD_API_ROOT_URL = DIRECT_UPLOAD_API_BASE_URL.replace(/\/api\/v1$/, "");
 
 type RequestOptions = {
   method?: string;
@@ -170,7 +169,7 @@ async function warmAnalyticsService(baseUrl: string): Promise<void> {
   }
 }
 
-function shouldFallbackToProxy(error: unknown): boolean {
+function shouldRetryUpload(error: unknown): boolean {
   if (!(error instanceof ApiError)) {
     return false;
   }
@@ -282,7 +281,8 @@ export function uploadDataset(
   };
 
   return (async () => {
-    await warmAnalyticsService(DIRECT_UPLOAD_API_ROOT_URL);
+    await warmAnalyticsService(API_ROOT_URL);
+    await wait(1_200);
 
     try {
       return await request<ReportDetail>("/analysis/upload", {
@@ -293,16 +293,18 @@ export function uploadDataset(
         baseUrl: DIRECT_UPLOAD_API_BASE_URL
       });
     } catch (error) {
-      if (!shouldFallbackToProxy(error)) {
+      if (!shouldRetryUpload(error)) {
         throw error;
       }
 
+      await wait(2_000);
       await warmAnalyticsService(API_ROOT_URL);
       return request<ReportDetail>("/analysis/upload", {
         method: "POST",
         token,
         body: createUploadFormData(),
-        timeoutMs: 600_000
+        timeoutMs: 600_000,
+        baseUrl: DIRECT_UPLOAD_API_BASE_URL
       });
     }
   })();
