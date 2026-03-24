@@ -10,6 +10,21 @@ import plotly.graph_objects as go
 from pandas.api.types import is_datetime64_any_dtype
 
 MAX_VISUALIZATION_ROWS = 5000
+DASHBOARD_COLORS = [
+    "#7C3AED",
+    "#4F46E5",
+    "#EC4899",
+    "#F59E0B",
+    "#14B8A6",
+    "#3B82F6",
+    "#EF4444",
+    "#8B5CF6",
+]
+HEATMAP_SCALE = [
+    [0.0, "#FFF5C3"],
+    [0.5, "#D6C2F7"],
+    [1.0, "#5B21B6"],
+]
 
 
 def get_chart_frame(dataframe: pd.DataFrame, max_rows: int = MAX_VISUALIZATION_ROWS) -> pd.DataFrame:
@@ -38,14 +53,19 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
             .head(10)
             .rename_axis(categorical_column)
             .reset_index(name="count")
+            .sort_values("count", ascending=True)
         )
         bar_figure = px.bar(
             counts,
-            x=categorical_column,
-            y="count",
+            x="count",
+            y=categorical_column,
+            orientation="h",
             color="count",
+            text="count",
             title=f"Top values in {categorical_column}",
+            color_continuous_scale=["#DCCBFF", "#7C3AED"],
         )
+        bar_figure.update_traces(textposition="outside", cliponaxis=False)
         style_figure(bar_figure)
         charts.append(
             build_chart_payload(
@@ -63,7 +83,13 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
             names=categorical_column,
             values="count",
             title=f"Category share for {categorical_column}",
-            hole=0.35,
+            hole=0.58,
+            color_discrete_sequence=DASHBOARD_COLORS,
+        )
+        pie_figure.update_traces(
+            textinfo="label+percent",
+            pull=[0.06 if index == 0 else 0 for index in range(len(pie_counts))],
+            marker={"line": {"color": "#fff8df", "width": 2}},
         )
         style_figure(pie_figure)
         charts.append(
@@ -83,7 +109,9 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
             x=numeric_column,
             nbins=min(30, max(10, len(chart_frame) // 5)),
             title=f"Distribution of {numeric_column}",
+            color_discrete_sequence=["#7C3AED"],
         )
+        histogram_figure.update_traces(marker_line={"color": "#F8E8AF", "width": 1})
         style_figure(histogram_figure)
         charts.append(
             build_chart_payload(
@@ -100,6 +128,12 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
             y=numeric_column,
             points="outliers",
             title=f"Outlier view for {numeric_column}",
+            color_discrete_sequence=["#14B8A6"],
+        )
+        box_figure.update_traces(
+            fillcolor="rgba(20, 184, 166, 0.16)",
+            marker={"color": "#7C3AED"},
+            line={"color": "#14B8A6"},
         )
         style_figure(box_figure)
         charts.append(
@@ -118,6 +152,10 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
             x=numeric_columns[0],
             y=numeric_columns[1],
             title=f"{numeric_columns[0]} vs {numeric_columns[1]}",
+            color_discrete_sequence=["#4F46E5"],
+        )
+        scatter_figure.update_traces(
+            marker={"size": 9, "opacity": 0.72, "line": {"color": "#FFF5C3", "width": 1}}
         )
         style_figure(scatter_figure)
         charts.append(
@@ -146,6 +184,7 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
                 y=numeric_columns[0],
                 markers=True,
                 title=f"{numeric_columns[0]} over {date_column}",
+                color_discrete_sequence=["#7C3AED"],
             )
         else:
             trend_frame = chart_frame[[numeric_columns[0]]].copy()
@@ -156,7 +195,14 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
                 y=numeric_columns[0],
                 markers=True,
                 title=f"{numeric_columns[0]} across dataset order",
+                color_discrete_sequence=["#7C3AED"],
             )
+        line_figure.update_traces(
+            line={"width": 3},
+            marker={"size": 7, "color": "#F59E0B", "line": {"color": "#FFF5C3", "width": 1}},
+            fill="tozeroy",
+            fillcolor="rgba(124, 58, 237, 0.12)",
+        )
         style_figure(line_figure)
         charts.append(
             build_chart_payload(
@@ -176,9 +222,10 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
                     z=matrix,
                     x=correlations["columns"],
                     y=correlations["columns"],
-                    colorscale="Tealgrn",
+                    colorscale=HEATMAP_SCALE,
                     zmin=-1,
                     zmax=1,
+                    hoverongaps=False,
                 )
             ]
         )
@@ -216,8 +263,22 @@ def build_chart_payload(
 def style_figure(figure) -> None:
     figure.update_layout(
         template="plotly_white",
-        paper_bgcolor="#ffffff",
-        plot_bgcolor="#ffffff",
-        margin={"l": 24, "r": 16, "t": 56, "b": 24},
-        legend={"orientation": "h", "y": -0.2},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(255,247,214,0.54)",
+        margin={"l": 24, "r": 16, "t": 54, "b": 30},
+        legend={"orientation": "h", "y": -0.2, "x": 0},
+        font={"family": "Manrope, sans-serif", "color": "#34195e", "size": 12},
+        hoverlabel={"bgcolor": "#351761", "bordercolor": "#f9d76a", "font": {"color": "#fff8e1"}},
+    )
+    figure.update_xaxes(
+        showline=True,
+        linecolor="rgba(77,39,123,0.18)",
+        gridcolor="rgba(77,39,123,0.08)",
+        zerolinecolor="rgba(77,39,123,0.12)",
+    )
+    figure.update_yaxes(
+        showline=True,
+        linecolor="rgba(77,39,123,0.18)",
+        gridcolor="rgba(77,39,123,0.08)",
+        zerolinecolor="rgba(77,39,123,0.12)",
     )
