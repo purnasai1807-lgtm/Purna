@@ -11,7 +11,7 @@ type ManualEntryCardProps = {
 };
 
 const initialColumns = ["region", "sales", "profit", "category"];
-const initialRows = [
+const initialRows: Array<Record<string, string>> = [
   { region: "North", sales: "120000", profit: "32000", category: "Retail" },
   { region: "South", sales: "98000", profit: "24000", category: "Wholesale" },
   { region: "West", sales: "110500", profit: "28000", category: "Retail" }
@@ -21,7 +21,7 @@ export function ManualEntryCard({ token, onCreated }: ManualEntryCardProps) {
   const [datasetName, setDatasetName] = useState("Manual quick analysis");
   const [targetColumn, setTargetColumn] = useState("");
   const [columns, setColumns] = useState(initialColumns);
-  const [rows, setRows] = useState(initialRows);
+  const [rows, setRows] = useState<Array<Record<string, string>>>(initialRows);
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -188,4 +188,3 @@ export function ManualEntryCard({ token, onCreated }: ManualEntryCardProps) {
     </section>
   );
 }
-
