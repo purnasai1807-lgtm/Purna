@@ -19,12 +19,14 @@ export function AnalysisDashboard({
   isPublic = false
 }: AnalysisDashboardProps) {
   const [actionState, setActionState] = useState<"idle" | "copying" | "downloading">("idle");
+  const [actionError, setActionError] = useState("");
   const payload = report.report;
   const modeling = payload.modeling;
   const metrics = modeling.metrics ?? {};
   const previewColumns = payload.overview.columns.map((item) => item.column);
 
   async function handleCopyShareLink() {
+    setActionError("");
     setActionState("copying");
     await copyToClipboard(report.share_url);
     window.setTimeout(() => setActionState("idle"), 1400);
@@ -35,6 +37,7 @@ export function AnalysisDashboard({
       return;
     }
 
+    setActionError("");
     setActionState("downloading");
     try {
       const blob = await downloadPdf(token, report.id);
@@ -46,6 +49,12 @@ export function AnalysisDashboard({
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
+    } catch (downloadError) {
+      setActionError(
+        downloadError instanceof Error
+          ? downloadError.message
+          : "We could not download the PDF right now."
+      );
     } finally {
       setActionState("idle");
     }
@@ -53,6 +62,7 @@ export function AnalysisDashboard({
 
   return (
     <div className="stack stack--xl">
+      {actionError ? <div className="notice notice--error">{actionError}</div> : null}
       <section className="hero hero--report">
         <div className="hero__content">
           <div className="section-eyebrow">Automated analysis complete</div>

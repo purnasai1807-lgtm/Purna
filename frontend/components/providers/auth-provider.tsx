@@ -9,7 +9,7 @@ import {
   type PropsWithChildren
 } from "react";
 
-import { getCurrentUser, login, signup } from "@/lib/api";
+import { ApiError, getCurrentUser, login, signup } from "@/lib/api";
 import type { LoginPayload, SignupPayload, User } from "@/lib/types";
 
 type AuthContextValue = {
@@ -44,16 +44,23 @@ export function AuthProvider({ children }: PropsWithChildren) {
         return;
       }
 
+      setToken(parsed.token);
+
       getCurrentUser(parsed.token)
         .then((currentUser) => {
-          setToken(parsed.token);
           setUser(currentUser);
         })
-        .catch(() => {
-          window.localStorage.removeItem(STORAGE_KEY);
+        .catch((error) => {
+          if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+            setToken(null);
+            setUser(null);
+            window.localStorage.removeItem(STORAGE_KEY);
+          }
         })
         .finally(() => setIsLoading(false));
     } catch {
+      setToken(null);
+      setUser(null);
       window.localStorage.removeItem(STORAGE_KEY);
       setIsLoading(false);
     }

@@ -11,37 +11,186 @@ import type {
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-  "http://localhost:8000/api/v1";
+  "https://auto-analytics-ai-api.onrender.com/api/v1";
+const API_ROOT_URL = API_BASE_URL.replace(/\/api\/v1$/, "");
 
 type RequestOptions = {
   method?: string;
   token?: string;
   body?: BodyInit | null;
   headers?: HeadersInit;
+  retries?: number;
+  timeoutMs?: number;
+  baseUrl?: string;
 };
 
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: options.method ?? "GET",
-    body: options.body,
-    headers: {
-      ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
-      ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
-      ...options.headers
-    },
-    cache: "no-store"
-  });
+export class ApiError extends Error {
+  status?: number;
+  code?: string;
+  isRetryable: boolean;
 
-  if (!response.ok) {
-    let message = "Something went wrong. Please try again.";
-    try {
-      const errorPayload = (await response.json()) as { detail?: string };
-      message = errorPayload.detail ?? message;
-    } catch {
-      message = response.statusText || message;
-    }
-    throw new Error(message);
+  constructor(
+    message: string,
+    options: {
+      status?: number;
+      code?: string;
+      isRetryable?: boolean;
+    } = {}
+  ) {
+    super(message);
+    this.name = "ApiError";
+    this.status = options.status;
+    this.code = options.code;
+    this.isRetryable = options.isRetryable ?? false;
   }
+}
+
+function buildUrl(path: string, baseUrl: string): string {
+  return path.startsWith("http://") || path.startsWith("https://")
+    ? path
+    : `${baseUrl}${path}`;
+}
+
+function getDefaultTimeout(method: string, path: string): number {
+  if (path.includes("/analysis/upload")) {
+    return 240_000;
+  }
+
+  if (path.includes("/analysis/manual") || path.includes("/download-pdf")) {
+    return 120_000;
+  }
+
+  if (method === "POST") {
+    return 90_000;
+  }
+
+  return 25_000;
+}
+
+function getDefaultRetries(method: string): number {
+  return method === "GET" ? 2 : 0;
+}
+
+function getFriendlyNetworkMessage(method: string): string {
+  if (method === "POST") {
+    return "We couldn't reach the analytics service. Please check your internet connection and try again in a few seconds.";
+  }
+
+  return "We are having trouble connecting to the analytics service right now. Please wait a moment and try again.";
+}
+
+function getFriendlyTimeoutMessage(path: string): string {
+  if (path.includes("/analysis/upload") || path.includes("/analysis/manual")) {
+    return "The analysis is taking longer than expected. Please wait a moment and try again.";
+  }
+
+  return "The server took too long to respond. Please try again in a moment.";
+}
+
+async function readErrorMessage(response: Response): Promise<string> {
+  const fallbackMessage = "Something went wrong. Please try again.";
+
+  try {
+    const errorPayload = (await response.json()) as { detail?: string };
+    if (errorPayload.detail) {
+      return errorPayload.detail;
+    }
+  } catch {
+    try {
+      const plainText = await response.text();
+      if (plainText.trim()) {
+        return plainText.trim();
+      }
+    } catch {
+      return response.statusText || fallbackMessage;
+    }
+  }
+
+  return response.statusText || fallbackMessage;
+}
+
+function normalizeError(error: unknown, method: string, path: string): ApiError {
+  if (error instanceof ApiError) {
+    return error;
+  }
+
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return new ApiError(getFriendlyTimeoutMessage(path), {
+      code: "TIMEOUT",
+      isRetryable: true
+    });
+  }
+
+  if (error instanceof TypeError) {
+    return new ApiError(getFriendlyNetworkMessage(method), {
+      code: "NETWORK_ERROR",
+      isRetryable: true
+    });
+  }
+
+  if (error instanceof Error) {
+    return new ApiError(error.message, { code: "UNKNOWN_ERROR" });
+  }
+
+  return new ApiError("Something went wrong. Please try again.", {
+    code: "UNKNOWN_ERROR"
+  });
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function fetchResponse(path: string, options: RequestOptions = {}): Promise<Response> {
+  const method = options.method ?? "GET";
+  const timeoutMs = options.timeoutMs ?? getDefaultTimeout(method, path);
+  const retries = options.retries ?? getDefaultRetries(method);
+  const url = buildUrl(path, options.baseUrl ?? API_BASE_URL);
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        method,
+        body: options.body,
+        headers: {
+          ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+          ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
+          ...options.headers
+        },
+        cache: "no-store",
+        signal: controller.signal
+      });
+      window.clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const message = await readErrorMessage(response);
+        throw new ApiError(message, {
+          status: response.status,
+          code: "HTTP_ERROR",
+          isRetryable: response.status >= 500 || response.status === 429
+        });
+      }
+
+      return response;
+    } catch (error) {
+      window.clearTimeout(timeoutId);
+      const normalizedError = normalizeError(error, method, path);
+      if (attempt >= retries || !normalizedError.isRetryable) {
+        throw normalizedError;
+      }
+
+      await wait(900 * (attempt + 1));
+    }
+  }
+
+  throw new ApiError("Something went wrong. Please try again.");
+}
+
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const response = await fetchResponse(path, options);
 
   if (response.status === 204) {
     return undefined as T;
@@ -53,19 +202,21 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 export function signup(payload: SignupPayload): Promise<AuthResponse> {
   return request<AuthResponse>("/auth/signup", {
     method: "POST",
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    timeoutMs: 120_000
   });
 }
 
 export function login(payload: LoginPayload): Promise<AuthResponse> {
   return request<AuthResponse>("/auth/login", {
     method: "POST",
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    timeoutMs: 120_000
   });
 }
 
 export function getCurrentUser(token: string): Promise<User> {
-  return request<User>("/auth/me", { token });
+  return request<User>("/auth/me", { token, retries: 2, timeoutMs: 30_000 });
 }
 
 export function uploadDataset(
@@ -85,7 +236,8 @@ export function uploadDataset(
   return request<ReportDetail>("/analysis/upload", {
     method: "POST",
     token,
-    body: formData
+    body: formData,
+    timeoutMs: 240_000
   });
 }
 
@@ -93,20 +245,28 @@ export function submitManualEntry(token: string, payload: ManualEntryPayload): P
   return request<ReportDetail>("/analysis/manual", {
     method: "POST",
     token,
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    timeoutMs: 180_000
   });
 }
 
 export function getHistory(token: string): Promise<HistoryItem[]> {
-  return request<HistoryItem[]>("/analysis/history", { token });
+  return request<HistoryItem[]>("/analysis/history", { token, retries: 2, timeoutMs: 30_000 });
 }
 
 export function getReport(token: string, reportId: string): Promise<ReportDetail> {
-  return request<ReportDetail>(`/analysis/reports/${reportId}`, { token });
+  return request<ReportDetail>(`/analysis/reports/${reportId}`, {
+    token,
+    retries: 2,
+    timeoutMs: 30_000
+  });
 }
 
 export function getSharedReport(shareToken: string): Promise<ReportDetail> {
-  return request<ReportDetail>(`/analysis/shared/${shareToken}`);
+  return request<ReportDetail>(`/analysis/shared/${shareToken}`, {
+    retries: 2,
+    timeoutMs: 30_000
+  });
 }
 
 export function createShareLink(token: string, reportId: string): Promise<ShareLinkResponse> {
@@ -117,18 +277,19 @@ export function createShareLink(token: string, reportId: string): Promise<ShareL
 }
 
 export async function downloadPdf(token: string, reportId: string): Promise<Blob> {
-  const response = await fetch(`${API_BASE_URL}/analysis/reports/${reportId}/download-pdf`, {
-    headers: {
-      Authorization: `Bearer ${token}`
-    }
+  const response = await fetchResponse(`/analysis/reports/${reportId}/download-pdf`, {
+    token,
+    timeoutMs: 120_000
   });
-
-  if (!response.ok) {
-    throw new Error("Unable to download the PDF report right now.");
-  }
-
   return response.blob();
 }
 
-export { API_BASE_URL };
+export function checkApiHealth(): Promise<{ status: string }> {
+  return request<{ status: string }>("/health", {
+    baseUrl: API_ROOT_URL,
+    retries: 2,
+    timeoutMs: 15_000
+  });
+}
 
+export { API_BASE_URL, API_ROOT_URL };

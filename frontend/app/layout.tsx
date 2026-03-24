@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 
 import { SiteHeader } from "@/components/layout/site-header";
 import { AuthProvider } from "@/components/providers/auth-provider";
+import { ConnectionBanner } from "@/components/system/connection-banner";
 
 import "./globals.css";
 
@@ -32,6 +33,7 @@ export default function RootLayout({
       <body className={`${bodyFont.variable} ${headingFont.variable}`}>
         <AuthProvider>
           <SiteHeader />
+          <ConnectionBanner />
           {children}
         </AuthProvider>
       </body>
