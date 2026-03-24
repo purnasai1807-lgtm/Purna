@@ -71,6 +71,7 @@ Frontend environment variables:
 ```bash
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1
 LOCAL_BACKEND_API_URL=http://127.0.0.1:8000/api/v1
+NEXT_PUBLIC_DIRECT_BACKEND_API_URL=http://127.0.0.1:8000/api/v1
 ```
 
 ## 4. Backend Code
@@ -151,6 +152,7 @@ Frontend runs on `http://localhost:3000` and backend runs on `http://localhost:8
 2. Set the root directory to `frontend`.
 3. Add environment variable:
    - `NEXT_PUBLIC_API_BASE_URL=https://your-backend-domain/api/v1`
+   - `NEXT_PUBLIC_DIRECT_BACKEND_API_URL=https://your-backend-domain/api/v1`
 4. Deploy and verify the public site URL.
 
 ### Final production wiring

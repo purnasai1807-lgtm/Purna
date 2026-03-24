@@ -13,6 +13,11 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
   "/api/proxy/api/v1";
 const API_ROOT_URL = API_BASE_URL.replace(/\/api\/v1$/, "");
+const DIRECT_UPLOAD_API_BASE_URL =
+  process.env.NEXT_PUBLIC_DIRECT_BACKEND_API_URL?.replace(/\/$/, "") ??
+  (API_BASE_URL.startsWith("/")
+    ? "https://auto-analytics-ai-api.onrender.com/api/v1"
+    : API_BASE_URL);
 
 type RequestOptions = {
   method?: string;
@@ -109,6 +114,17 @@ async function readErrorMessage(response: Response): Promise<string> {
   return response.statusText || fallbackMessage;
 }
 
+function getFriendlyHttpMessage(path: string, status: number, fallbackMessage: string): string {
+  if (
+    path.includes("/analysis/upload") &&
+    [502, 503, 504].includes(status)
+  ) {
+    return "Large file uploads are taking longer than expected right now. Please wait a few seconds and try again.";
+  }
+
+  return fallbackMessage;
+}
+
 function normalizeError(error: unknown, method: string, path: string): ApiError {
   if (error instanceof ApiError) {
     return error;
@@ -166,7 +182,11 @@ async function fetchResponse(path: string, options: RequestOptions = {}): Promis
       window.clearTimeout(timeoutId);
 
       if (!response.ok) {
-        const message = await readErrorMessage(response);
+        const message = getFriendlyHttpMessage(
+          path,
+          response.status,
+          await readErrorMessage(response)
+        );
         throw new ApiError(message, {
           status: response.status,
           code: "HTTP_ERROR",
@@ -237,7 +257,8 @@ export function uploadDataset(
     method: "POST",
     token,
     body: formData,
-    timeoutMs: 240_000
+    timeoutMs: 300_000,
+    baseUrl: DIRECT_UPLOAD_API_BASE_URL
   });
 }
 
