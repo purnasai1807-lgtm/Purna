@@ -15,4 +15,16 @@ services:
         sync: false
       - key: REPORT_BASE_URL
         sync: false
-
+  - type: web
+    name: auto-analytics-ai-web
+    env: node
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start -- --hostname 0.0.0.0 --port $PORT
+    envVars:
+      - key: BACKEND_API_URL
+        value: https://auto-analytics-ai-api.onrender.com
+      - key: NEXT_PUBLIC_API_BASE_URL
+        value: /api/proxy/api/v1
+      - key: NEXT_PUBLIC_DIRECT_BACKEND_API_URL
+        value: https://auto-analytics-ai-api.onrender.com/api/v1

@@ -8,3 +8,5 @@ try {
     Write-Host "Cached frontend build was unavailable. Rebuilding before startup..."
     & $startScript
 }
+
+& (Join-Path $PSScriptRoot "start-tunnel.ps1")
