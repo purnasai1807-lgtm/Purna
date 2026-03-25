@@ -29,3 +29,11 @@ export async function copyToClipboard(value: string): Promise<boolean> {
     return false;
   }
 }
+
+export function buildShareUrl(shareToken: string, fallbackUrl: string): string {
+  if (typeof window === "undefined") {
+    return fallbackUrl;
+  }
+
+  return `${window.location.origin}/share/${shareToken}`;
+}

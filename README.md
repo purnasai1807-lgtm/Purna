@@ -131,6 +131,28 @@ npm run dev
 
 Frontend runs on `http://localhost:3000` and backend runs on `http://localhost:8000`.
 
+### Keep the app running after closing VS Code on Windows
+
+If you want the app to keep running after you close the editor, start it with the background launcher from the project root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-app.ps1
+```
+
+Helpful companion commands:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\status-app.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-app.ps1
+```
+
+What this does:
+- builds the Next.js frontend
+- starts the FastAPI backend and frontend as detached background processes
+- writes logs and PID files to `.runtime/`
+
+This keeps the app running after VS Code is closed, but it still depends on your computer staying on. For true 24/7 uptime, deploy the backend and frontend using the Render and Vercel steps below.
+
 ## 7. Production Deployment Steps
 
 ### Backend on Render

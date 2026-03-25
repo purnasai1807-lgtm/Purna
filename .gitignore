@@ -1,20 +1,15 @@
-# Frontend
 frontend/.next/
 frontend/node_modules/
 frontend/.env.local
 frontend/tsconfig.tsbuildinfo
 frontend/frontend-server.log
 frontend/frontend-server.err
-
-# Backend
 backend/.venv/
 backend/.pytest_cache/
 backend/auto_analytics_ai.db
 backend/.packages/
 backend/backend-server.log
 backend/backend-server.err
-
-# Shared
 .env
 __pycache__/
 *.pyc
@@ -23,3 +18,4 @@ __pycache__/
 cloudflared.out
 cloudflared.err
 render-openapi.json
+.runtime/

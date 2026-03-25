@@ -5,7 +5,7 @@ import { useState } from "react";
 import { ChartRenderer } from "@/components/charts/chart-renderer";
 import { downloadPdf } from "@/lib/api";
 import type { ModelingSummary, ReportDetail, ReportPayload } from "@/lib/types";
-import { copyToClipboard, formatDate, formatLabel, formatMetric } from "@/lib/utils";
+import { buildShareUrl, copyToClipboard, formatDate, formatLabel, formatMetric } from "@/lib/utils";
 
 type AnalysisDashboardProps = {
   report: ReportDetail;
@@ -58,7 +58,7 @@ export function AnalysisDashboard({
   async function handleCopyShareLink() {
     setActionError("");
     setActionState("copying");
-    await copyToClipboard(report.share_url);
+    await copyToClipboard(buildShareUrl(report.share_token, report.share_url));
     window.setTimeout(() => setActionState("idle"), 1400);
   }
 

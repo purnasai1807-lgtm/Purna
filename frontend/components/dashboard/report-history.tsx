@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 
 import type { HistoryItem } from "@/lib/types";
-import { copyToClipboard, formatDate } from "@/lib/utils";
+import { buildShareUrl, copyToClipboard, formatDate } from "@/lib/utils";
 
 type ReportHistoryProps = {
   items: HistoryItem[];
@@ -14,7 +14,7 @@ export function ReportHistory({ items }: ReportHistoryProps) {
   const [copiedReportId, setCopiedReportId] = useState<string | null>(null);
 
   async function handleCopy(report: HistoryItem) {
-    const copied = await copyToClipboard(report.share_url);
+    const copied = await copyToClipboard(buildShareUrl(report.share_token, report.share_url));
     setCopiedReportId(copied ? report.id : null);
     window.setTimeout(() => setCopiedReportId(null), 2000);
   }

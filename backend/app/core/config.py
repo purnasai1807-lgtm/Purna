@@ -10,7 +10,15 @@ class Settings(BaseSettings):
     secret_key: str = "change-me-in-production"
     access_token_expire_minutes: int = 1440
     database_url: str = "sqlite:///./auto_analytics_ai.db"
-    cors_origins: str = "http://localhost:3000"
+    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    cors_origin_regex: str = (
+        r"^https://.*\.vercel\.app$|"
+        r"^http://localhost(:\d+)?$|"
+        r"^http://127\.0\.0\.1(:\d+)?$|"
+        r"^http://192\.168\.\d+\.\d+(:\d+)?$|"
+        r"^http://10\.\d+\.\d+\.\d+(:\d+)?$|"
+        r"^http://172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+(:\d+)?$"
+    )
     report_base_url: str = "http://localhost:3000"
 
     model_config = SettingsConfigDict(
@@ -31,4 +39,3 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
-
