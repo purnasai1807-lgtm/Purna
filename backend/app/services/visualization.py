@@ -1,14 +1,11 @@
 from __future__ import annotations
-
 import json
 from typing import Any
-
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from pandas.api.types import is_datetime64_any_dtype
-
 MAX_VISUALIZATION_ROWS = 5000
 DASHBOARD_COLORS = [
     "#7C3AED",
@@ -25,14 +22,10 @@ HEATMAP_SCALE = [
     [0.5, "#D6C2F7"],
     [1.0, "#5B21B6"],
 ]
-
-
 def get_chart_frame(dataframe: pd.DataFrame, max_rows: int = MAX_VISUALIZATION_ROWS) -> pd.DataFrame:
     if len(dataframe) <= max_rows:
         return dataframe
     return dataframe.sample(n=max_rows, random_state=42).sort_index()
-
-
 def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) -> list[dict[str, Any]]:
     charts: list[dict[str, Any]] = []
     chart_frame = get_chart_frame(dataframe)
@@ -43,7 +36,6 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
         for column in dataframe.columns
         if column not in numeric_columns and column not in datetime_columns
     ]
-
     if categorical_columns:
         categorical_column = categorical_columns[0]
         counts = (
@@ -76,7 +68,6 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
                 figure=bar_figure,
             )
         )
-
         pie_counts = counts.head(5)
         pie_figure = px.pie(
             pie_counts,
@@ -101,7 +92,6 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
                 figure=pie_figure,
             )
         )
-
     if numeric_columns:
         numeric_column = numeric_columns[0]
         histogram_figure = px.histogram(
@@ -122,7 +112,6 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
                 figure=histogram_figure,
             )
         )
-
         box_figure = px.box(
             chart_frame,
             y=numeric_column,
@@ -145,7 +134,6 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
                 figure=box_figure,
             )
         )
-
     if len(numeric_columns) >= 2:
         scatter_figure = px.scatter(
             chart_frame,

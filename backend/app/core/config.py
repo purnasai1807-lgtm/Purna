@@ -48,8 +48,12 @@ class Settings(BaseSettings):
     s3_access_key_id: str | None = None
     s3_secret_access_key: str | None = None
     s3_prefix: str = "uploads"
+    s3_presign_expiry_seconds: int = 900
+    s3_multipart_chunk_size_mb: int = 8
     s3_force_path_style: bool = False
     s3_use_ssl: bool = True
+    upload_session_expiry_minutes: int = 1440
+    upload_cleanup_interval_minutes: int = 30
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -81,6 +85,14 @@ class Settings(BaseSettings):
     @property
     def uses_s3_storage(self) -> bool:
         return self.storage_backend.strip().lower() == "s3" and bool(self.s3_bucket_name)
+
+    @property
+    def s3_multipart_chunk_size_bytes(self) -> int:
+        return max(self.s3_multipart_chunk_size_mb, 5) * 1024 * 1024
+
+    @property
+    def upload_session_expiry_seconds(self) -> int:
+        return self.upload_session_expiry_minutes * 60
 
 
 @lru_cache(maxsize=1)

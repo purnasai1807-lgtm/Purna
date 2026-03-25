@@ -25,4 +25,10 @@ else:
         accept_content=["json"],
         broker_connection_retry_on_startup=True,
         worker_prefetch_multiplier=1,
+        beat_schedule={
+            "cleanup-expired-upload-sessions": {
+                "task": "analytics.cleanup_upload_sessions",
+                "schedule": settings.upload_cleanup_interval_minutes * 60,
+            }
+        },
     )

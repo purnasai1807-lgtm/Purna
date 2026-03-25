@@ -1,8 +1,13 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
-import { uploadDataset } from "@/lib/api";
+import {
+  clearPendingUploadSession,
+  getPendingUploadSession,
+  resumePendingUploadSession,
+  uploadDataset
+} from "@/lib/api";
 import type { ReportDetail } from "@/lib/types";
 
 type DatasetUploadCardProps = {
@@ -33,8 +38,65 @@ export function DatasetUploadCard({ token, onCreated }: DatasetUploadCardProps) 
   const [targetColumn, setTargetColumn] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [statusMessage, setStatusMessage] = useState("Uploading dataset...");
   const [error, setError] = useState("");
   const fileMode = classifyClientFileMode(file);
+
+  useEffect(() => {
+    const pendingSession = getPendingUploadSession();
+    if (!token || !pendingSession) {
+      return;
+    }
+
+    let isCancelled = false;
+    setError("");
+    setIsSubmitting(true);
+    setStatusMessage("Upload complete, finalizing analysis...");
+    setUploadProgress(100);
+
+    void resumePendingUploadSession(token, {
+      onUploadProgress: (progress) => {
+        if (!isCancelled) {
+          setUploadProgress(progress);
+        }
+      },
+      onStatusChange: (message, progress) => {
+        if (isCancelled) {
+          return;
+        }
+        setStatusMessage(message);
+        if (typeof progress === "number") {
+          setUploadProgress(progress);
+        }
+      }
+    })
+      .then((report) => {
+        if (!report || isCancelled) {
+          return;
+        }
+        clearPendingUploadSession(pendingSession.uploadId);
+        onCreated(report);
+      })
+      .catch((resumeError) => {
+        if (isCancelled) {
+          return;
+        }
+        setError(
+          resumeError instanceof Error
+            ? resumeError.message
+            : "The secure upload could not be resumed right now."
+        );
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setIsSubmitting(false);
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [onCreated, token]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -49,12 +111,19 @@ export function DatasetUploadCard({ token, onCreated }: DatasetUploadCardProps) 
 
     setError("");
     setUploadProgress(0);
+    setStatusMessage("Preparing upload...");
     setIsSubmitting(true);
     try {
       const report = await uploadDataset(file, token, {
         datasetName: datasetName.trim() || undefined,
         targetColumn: targetColumn.trim() || undefined,
-        onUploadProgress: setUploadProgress
+        onUploadProgress: setUploadProgress,
+        onStatusChange: (message, progress) => {
+          setStatusMessage(message);
+          if (typeof progress === "number") {
+            setUploadProgress(progress);
+          }
+        }
       });
       onCreated(report);
     } catch (submissionError) {
@@ -137,7 +206,7 @@ export function DatasetUploadCard({ token, onCreated }: DatasetUploadCardProps) 
         {isSubmitting ? (
           <div className="progress-card">
             <div className="progress-card__meta">
-              <span>Upload progress</span>
+              <span>{statusMessage}</span>
               <strong>{uploadProgress}%</strong>
             </div>
             <div className="progress-track">

@@ -75,6 +75,54 @@ export type JobStatus = {
   result?: ReportPayload | null;
 };
 
+export type UploadCompletedPart = {
+  part_number: number;
+  etag: string;
+};
+
+export type UploadPartInstruction = {
+  part_number: number;
+  url: string;
+};
+
+export type UploadSession = {
+  upload_id: string;
+  upload_strategy: string;
+  storage_backend: string;
+  storage_key: string;
+  processing_mode: string;
+  expires_at: string;
+  chunk_size_bytes?: number | null;
+  single_part_url?: string | null;
+  single_part_headers: Record<string, string>;
+  multipart_upload_id?: string | null;
+  multipart_parts: UploadPartInstruction[];
+};
+
+export type UploadSessionStatus = {
+  upload_id: string;
+  dataset_name: string;
+  target_column?: string | null;
+  original_filename: string;
+  content_type?: string | null;
+  file_size_bytes: number;
+  processing_mode: string;
+  upload_strategy: string;
+  storage_backend: string;
+  storage_key: string;
+  status: string;
+  progress: number;
+  message?: string | null;
+  progress_message?: string | null;
+  error_message?: string | null;
+  report_id?: string | null;
+  job_id?: string | null;
+  created_at: string;
+  updated_at: string;
+  expires_at?: string | null;
+  report?: ReportDetail | null;
+};
+
 export type ReportColumnProfile = {
   column: string;
   dtype: string;

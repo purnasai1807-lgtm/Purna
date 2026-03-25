@@ -106,6 +106,44 @@ class AnalysisCacheEntry(TimestampMixin, Base):
     )
 
 
+class AnalysisUploadSession(TimestampMixin, Base):
+    __tablename__ = "analysis_upload_sessions"
+    __table_args__ = (
+        Index("ix_analysis_upload_sessions_user_created_at", "user_id", "created_at"),
+        Index("ix_analysis_upload_sessions_status_updated_at", "status", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    dataset_name: Mapped[str] = mapped_column(String(180))
+    target_column: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    original_filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    file_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    processing_mode: Mapped[str] = mapped_column(String(20), default="small")
+    storage_backend: Mapped[str] = mapped_column(String(20), default="local")
+    storage_key: Mapped[str] = mapped_column(Text)
+    s3_upload_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    upload_strategy: Mapped[str] = mapped_column(String(20), default="single_part")
+    status: Mapped[str] = mapped_column(String(20), default="created")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    report_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("analysis_reports.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("analysis_cache_entries.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped[User] = relationship()
+    report: Mapped[AnalysisReport | None] = relationship(foreign_keys=[report_id])
+    job: Mapped[AnalysisCacheEntry | None] = relationship(foreign_keys=[job_id])
+
+
 class AnalysisReportCacheLink(Base):
     __tablename__ = "analysis_report_cache_links"
     __table_args__ = (

@@ -9,6 +9,9 @@ import type {
   ReportSectionResponse,
   ShareLinkResponse,
   SignupPayload,
+  UploadCompletedPart,
+  UploadSession,
+  UploadSessionStatus,
   User
 } from "@/lib/types";
 
@@ -47,6 +50,17 @@ const DIRECT_UPLOAD_API_BASE_URL = normalizeApiBaseUrl(
 );
 const DIRECT_UPLOAD_API_ROOT_URL = getApiRootUrl(DIRECT_UPLOAD_API_BASE_URL);
 const DIRECT_UPLOAD_REQUIRES_DIRECT_BACKEND = DIRECT_UPLOAD_API_BASE_URL === INTERNAL_PROXY_API_BASE_URL;
+const DIRECT_STORAGE_UPLOADS_ENABLED = (() => {
+  const explicitValue = process.env.NEXT_PUBLIC_USE_DIRECT_STORAGE_UPLOADS?.trim().toLowerCase();
+  if (explicitValue === "true") {
+    return true;
+  }
+  if (explicitValue === "false") {
+    return false;
+  }
+  return /^https:\/\//.test(DIRECT_UPLOAD_API_ROOT_URL);
+})();
+const PENDING_UPLOAD_STORAGE_KEY = "auto_analytics_pending_upload_session";
 
 type RequestOptions = {
   method?: string;
@@ -62,6 +76,17 @@ type UploadDatasetInput = {
   datasetName?: string;
   targetColumn?: string;
   onUploadProgress?: (progress: number) => void;
+  onStatusChange?: (message: string, progress?: number) => void;
+};
+
+export type PendingUploadSessionRecord = {
+  uploadId: string;
+  datasetName?: string;
+  targetColumn?: string;
+  uploadStrategy: string;
+  storageCompleted: boolean;
+  parts: UploadCompletedPart[];
+  updatedAt: string;
 };
 
 export class ApiError extends Error {
@@ -92,7 +117,7 @@ function buildUrl(path: string, baseUrl: string): string {
 }
 
 function getDefaultTimeout(method: string, path: string): number {
-  if (path.includes("/analysis/upload")) {
+  if (path.includes("/analysis/uploads/") || path.includes("/analysis/upload")) {
     return 600_000;
   }
 
@@ -120,6 +145,10 @@ function getFriendlyNetworkMessage(method: string, path: string): string {
     return "Backend is waking up or temporarily unreachable. Please wait a few seconds and try again.";
   }
 
+  if (path.includes("/analysis/uploads/")) {
+    return "The backend is temporarily unavailable while finalizing your secure upload. Your uploaded file is preserved and can resume shortly.";
+  }
+
   if (path.includes("/analysis/upload")) {
     return "The upload could not reach the backend directly. The backend may still be waking up. Please retry in a few seconds.";
   }
@@ -134,6 +163,10 @@ function getFriendlyNetworkMessage(method: string, path: string): string {
 function getFriendlyTimeoutMessage(path: string): string {
   if (path.includes("/health")) {
     return "Backend is taking longer than expected to wake up. Please wait a few seconds and try again.";
+  }
+
+  if (path.includes("/analysis/uploads/")) {
+    return "Upload finalization is taking longer than expected. Your file is already in secure storage, and the app will keep trying to resume.";
   }
 
   if (path.includes("/analysis/upload")) {
@@ -153,6 +186,10 @@ function getFriendlyHttpMessage(path: string, status: number, fallbackMessage: s
       return "Backend is waking up or temporarily unreachable. Please wait a few seconds and try again.";
     }
 
+    if (path.includes("/analysis/uploads/")) {
+      return "The backend is still waking up while finalizing your secure upload. The file is already stored safely and the app will retry.";
+    }
+
     if (path.includes("/analysis/upload")) {
       return "Large dataset detected. Upload routing is correct, but the backend is still unavailable. Please retry in a few seconds.";
     }
@@ -161,6 +198,20 @@ function getFriendlyHttpMessage(path: string, status: number, fallbackMessage: s
   }
 
   return fallbackMessage;
+}
+
+function normalizeGatewayLikeMessage(path: string, message: string): string {
+  const normalizedMessage = message.trim().toLowerCase();
+  if (normalizedMessage === "bad gateway") {
+    return getFriendlyHttpMessage(path, 502, message);
+  }
+  if (normalizedMessage === "service unavailable") {
+    return getFriendlyHttpMessage(path, 503, message);
+  }
+  if (normalizedMessage === "gateway timeout") {
+    return getFriendlyHttpMessage(path, 504, message);
+  }
+  return message;
 }
 
 async function readErrorMessage(response: Response): Promise<string> {
@@ -205,7 +256,10 @@ function normalizeError(error: unknown, method: string, path: string): ApiError 
   }
 
   if (error instanceof Error) {
-    return new ApiError(error.message, { code: "UNKNOWN_ERROR" });
+    return new ApiError(normalizeGatewayLikeMessage(path, error.message), {
+      code: "UNKNOWN_ERROR",
+      isRetryable: /bad gateway|service unavailable|gateway timeout/i.test(error.message),
+    });
   }
 
   return new ApiError("Something went wrong. Please try again.", {
@@ -234,6 +288,345 @@ function shouldRetryUpload(error: unknown): boolean {
     error.code === "NETWORK_ERROR" ||
     error.code === "TIMEOUT" ||
     [502, 503, 504].includes(error.status ?? 0)
+  );
+}
+
+function shouldRetryUploadSessionFlow(error: unknown): boolean {
+  if (!(error instanceof ApiError)) {
+    return false;
+  }
+
+  return (
+    error.code === "NETWORK_ERROR" ||
+    error.code === "TIMEOUT" ||
+    [502, 503, 504].includes(error.status ?? 0)
+  );
+}
+
+function readPendingUploadSessionRecord(): PendingUploadSessionRecord | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(PENDING_UPLOAD_STORAGE_KEY);
+    if (!rawValue) {
+      return null;
+    }
+    return JSON.parse(rawValue) as PendingUploadSessionRecord;
+  } catch {
+    return null;
+  }
+}
+
+function writePendingUploadSessionRecord(record: PendingUploadSessionRecord): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(PENDING_UPLOAD_STORAGE_KEY, JSON.stringify(record));
+}
+
+function clearPendingUploadSessionRecord(uploadId?: string): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const existingRecord = readPendingUploadSessionRecord();
+  if (uploadId && existingRecord?.uploadId && existingRecord.uploadId !== uploadId) {
+    return;
+  }
+
+  window.localStorage.removeItem(PENDING_UPLOAD_STORAGE_KEY);
+}
+
+function updatePendingUploadSessionRecord(
+  update: Partial<PendingUploadSessionRecord> & Pick<PendingUploadSessionRecord, "uploadId">
+): void {
+  const currentRecord = readPendingUploadSessionRecord();
+  if (!currentRecord || currentRecord.uploadId !== update.uploadId) {
+    return;
+  }
+  writePendingUploadSessionRecord({
+    ...currentRecord,
+    ...update,
+    updatedAt: new Date().toISOString()
+  });
+}
+
+function notifyUploadStatus(
+  input: UploadDatasetInput | undefined,
+  message: string,
+  progress?: number
+): void {
+  input?.onStatusChange?.(message, progress);
+  if (progress !== undefined) {
+    input?.onUploadProgress?.(progress);
+  }
+}
+
+async function createUploadSession(
+  file: File,
+  token: string,
+  input: UploadDatasetInput
+): Promise<UploadSession> {
+  return request<UploadSession>("/analysis/uploads/session", {
+    method: "POST",
+    token,
+    body: JSON.stringify({
+      filename: file.name,
+      content_type: file.type || undefined,
+      file_size_bytes: file.size,
+      dataset_name: input.datasetName,
+      target_column: input.targetColumn
+    }),
+    baseUrl: DIRECT_UPLOAD_API_BASE_URL,
+    retries: 1,
+    timeoutMs: 120_000
+  });
+}
+
+function uploadBlobWithXhr(
+  url: string,
+  blob: Blob,
+  options: {
+    headers?: Record<string, string>;
+    timeoutMs?: number;
+    onProgress?: (loadedBytes: number) => void;
+  } = {}
+): Promise<{ etag?: string | null }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.timeout = options.timeoutMs ?? 600_000;
+
+    Object.entries(options.headers ?? {}).forEach(([headerName, headerValue]) => {
+      xhr.setRequestHeader(headerName, headerValue);
+    });
+
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || !options.onProgress) {
+        return;
+      }
+      options.onProgress(event.loaded);
+    };
+
+    xhr.onerror = () => {
+      reject(
+        new ApiError("The secure storage upload failed. Please try again.", {
+          code: "NETWORK_ERROR",
+          isRetryable: true
+        })
+      );
+    };
+
+    xhr.ontimeout = () => {
+      reject(
+        new ApiError("The secure storage upload timed out. Please try again.", {
+          code: "TIMEOUT",
+          isRetryable: true
+        })
+      );
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve({
+          etag: xhr.getResponseHeader("ETag") ?? xhr.getResponseHeader("etag")
+        });
+        return;
+      }
+
+      reject(
+        new ApiError("The secure storage upload failed. Please try again.", {
+          status: xhr.status,
+          code: "HTTP_ERROR",
+          isRetryable: xhr.status >= 500 || xhr.status === 429
+        })
+      );
+    };
+
+    xhr.send(blob);
+  });
+}
+
+async function uploadSinglePartToStorage(
+  file: File,
+  session: UploadSession,
+  input: UploadDatasetInput
+): Promise<UploadCompletedPart[]> {
+  if (!session.single_part_url) {
+    throw new ApiError("The secure upload session did not include a single-part upload URL.");
+  }
+
+  await uploadBlobWithXhr(session.single_part_url, file, {
+    headers: session.single_part_headers,
+    onProgress: (loadedBytes) => {
+      notifyUploadStatus(
+        input,
+        "Uploading to secure storage...",
+        Math.min(100, Math.round((loadedBytes / file.size) * 100))
+      );
+    }
+  });
+
+  notifyUploadStatus(input, "Upload complete, finalizing analysis...", 100);
+  return [];
+}
+
+async function uploadMultipartToStorage(
+  file: File,
+  session: UploadSession,
+  input: UploadDatasetInput
+): Promise<UploadCompletedPart[]> {
+  if (!session.multipart_parts.length || !session.chunk_size_bytes) {
+    throw new ApiError("The secure upload session did not include multipart upload instructions.");
+  }
+
+  const completedParts: UploadCompletedPart[] = [];
+  let uploadedBytes = 0;
+
+  for (let index = 0; index < session.multipart_parts.length; index += 1) {
+    const uploadPart = session.multipart_parts[index];
+    const start = index * session.chunk_size_bytes;
+    const end = Math.min(file.size, start + session.chunk_size_bytes);
+    const blob = file.slice(start, end);
+
+    const result = await uploadBlobWithXhr(uploadPart.url, blob, {
+      onProgress: (loadedBytes) => {
+        const totalUploaded = Math.min(file.size, uploadedBytes + loadedBytes);
+        notifyUploadStatus(
+          input,
+          "Uploading to secure storage...",
+          Math.min(100, Math.round((totalUploaded / file.size) * 100))
+        );
+      }
+    });
+
+    uploadedBytes += blob.size;
+    const etag = result.etag?.trim();
+    if (!etag) {
+      throw new ApiError(
+        "The storage provider did not return a multipart upload ETag. Please verify the bucket CORS and exposed headers.",
+        { code: "UPLOAD_ETAG_MISSING" }
+      );
+    }
+
+    completedParts.push({ part_number: uploadPart.part_number, etag });
+    notifyUploadStatus(
+      input,
+      "Uploading to secure storage...",
+      Math.min(100, Math.round((uploadedBytes / file.size) * 100))
+    );
+  }
+
+  notifyUploadStatus(input, "Upload complete, finalizing analysis...", 100);
+  return completedParts;
+}
+
+async function completeUploadSession(
+  token: string,
+  uploadId: string,
+  parts: UploadCompletedPart[]
+): Promise<ReportDetail> {
+  return request<ReportDetail>(`/analysis/uploads/${uploadId}/complete`, {
+    method: "POST",
+    token,
+    body: JSON.stringify({ parts }),
+    baseUrl: DIRECT_UPLOAD_API_BASE_URL,
+    timeoutMs: 180_000
+  });
+}
+
+async function getUploadSessionStatus(
+  token: string,
+  uploadId: string
+): Promise<UploadSessionStatus> {
+  return request<UploadSessionStatus>(`/analysis/uploads/${uploadId}`, {
+    token,
+    baseUrl: DIRECT_UPLOAD_API_BASE_URL,
+    retries: 1,
+    timeoutMs: 30_000
+  });
+}
+
+async function finalizeUploadSessionWithRecovery(
+  token: string,
+  pendingRecord: PendingUploadSessionRecord,
+  input: UploadDatasetInput
+): Promise<ReportDetail> {
+  let lastKnownError: unknown = null;
+
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      const sessionStatus = await getUploadSessionStatus(token, pendingRecord.uploadId);
+      if (sessionStatus.report) {
+        clearPendingUploadSessionRecord(pendingRecord.uploadId);
+        return sessionStatus.report;
+      }
+
+      if (sessionStatus.status === "failed") {
+        clearPendingUploadSessionRecord(pendingRecord.uploadId);
+        throw new ApiError(
+          sessionStatus.error_message ??
+            sessionStatus.message ??
+            "The upload failed while finalizing the analysis."
+        );
+      }
+
+      if (sessionStatus.status === "expired") {
+        clearPendingUploadSessionRecord(pendingRecord.uploadId);
+        throw new ApiError(
+          sessionStatus.error_message ?? "Upload session expired. Please upload the file again."
+        );
+      }
+
+      notifyUploadStatus(
+        input,
+        sessionStatus.message ??
+          sessionStatus.progress_message ??
+          "Upload complete, finalizing analysis...",
+        sessionStatus.progress
+      );
+
+      const finalizingUpdatedAt = Date.parse(sessionStatus.updated_at);
+      const isFinalizingStale =
+        sessionStatus.status === "finalizing" &&
+        Number.isFinite(finalizingUpdatedAt) &&
+        Date.now() - finalizingUpdatedAt > 30_000;
+
+      if (
+        pendingRecord.storageCompleted &&
+        (["created", "uploading", "uploaded"].includes(sessionStatus.status) || isFinalizingStale)
+      ) {
+        try {
+          const report = await completeUploadSession(token, pendingRecord.uploadId, pendingRecord.parts);
+          clearPendingUploadSessionRecord(pendingRecord.uploadId);
+          return report;
+        } catch (error) {
+          lastKnownError = error;
+          if (!shouldRetryUploadSessionFlow(error)) {
+            throw error;
+          }
+        }
+      }
+    } catch (error) {
+      lastKnownError = error;
+      if (!shouldRetryUploadSessionFlow(error)) {
+        throw error;
+      }
+    }
+
+    await wait(3_000);
+  }
+
+  throw normalizeError(
+    lastKnownError ??
+      new ApiError(
+        "Upload finalization is still recovering. Your file is stored safely, and reopening the page will resume automatically."
+      ),
+    "POST",
+    "/analysis/uploads/finalize"
   );
 }
 
@@ -353,8 +746,13 @@ async function uploadWithXhr(
         (response && typeof response === "object" && "detail" in response && response.detail) ||
         xhr.statusText ||
         "Upload failed.";
+      const friendlyDetail = getFriendlyHttpMessage(
+        "/analysis/upload",
+        xhr.status,
+        normalizeGatewayLikeMessage("/analysis/upload", detail)
+      );
       reject(
-        new ApiError(detail, {
+        new ApiError(friendlyDetail, {
           status: xhr.status,
           code: "HTTP_ERROR",
           isRetryable: xhr.status >= 500 || xhr.status === 429
@@ -400,6 +798,57 @@ export async function uploadDataset(
 
   await warmAnalyticsService();
 
+  if (DIRECT_STORAGE_UPLOADS_ENABLED) {
+    notifyUploadStatus(input, "Preparing upload...", 5);
+    const uploadSession = await createUploadSession(file, token, input);
+    const pendingRecord: PendingUploadSessionRecord = {
+      uploadId: uploadSession.upload_id,
+      datasetName: input.datasetName,
+      targetColumn: input.targetColumn,
+      uploadStrategy: uploadSession.upload_strategy,
+      storageCompleted: false,
+      parts: [],
+      updatedAt: new Date().toISOString()
+    };
+
+    writePendingUploadSessionRecord(pendingRecord);
+    try {
+      if (uploadSession.processing_mode === "large") {
+        notifyUploadStatus(input, "Large dataset detected. Uploading to secure storage...", 5);
+      } else if (uploadSession.processing_mode === "medium") {
+        notifyUploadStatus(input, "Chunk-based upload detected. Uploading to secure storage...", 5);
+      }
+
+      const completedParts =
+        uploadSession.upload_strategy === "single_part"
+          ? await uploadSinglePartToStorage(file, uploadSession, input)
+          : await uploadMultipartToStorage(file, uploadSession, input);
+
+      updatePendingUploadSessionRecord({
+        uploadId: uploadSession.upload_id,
+        storageCompleted: true,
+        parts: completedParts
+      });
+
+      return finalizeUploadSessionWithRecovery(
+        token,
+        {
+          ...pendingRecord,
+          storageCompleted: true,
+          parts: completedParts,
+          updatedAt: new Date().toISOString()
+        },
+        input
+      );
+    } catch (error) {
+      const currentPendingRecord = readPendingUploadSessionRecord();
+      if (!currentPendingRecord?.storageCompleted) {
+        clearPendingUploadSessionRecord(uploadSession.upload_id);
+      }
+      throw error;
+    }
+  }
+
   try {
     return await uploadWithXhr(file, token, input, DIRECT_UPLOAD_API_BASE_URL);
   } catch (error) {
@@ -411,6 +860,25 @@ export async function uploadDataset(
     await warmAnalyticsService();
     return uploadWithXhr(file, token, input, DIRECT_UPLOAD_API_BASE_URL);
   }
+}
+
+export function getPendingUploadSession(): PendingUploadSessionRecord | null {
+  return readPendingUploadSessionRecord();
+}
+
+export async function resumePendingUploadSession(
+  token: string,
+  input: UploadDatasetInput
+): Promise<ReportDetail | null> {
+  const pendingRecord = readPendingUploadSessionRecord();
+  if (!pendingRecord) {
+    return null;
+  }
+  return finalizeUploadSessionWithRecovery(token, pendingRecord, input);
+}
+
+export function clearPendingUploadSession(uploadId?: string): void {
+  clearPendingUploadSessionRecord(uploadId);
 }
 
 export function submitManualEntry(token: string, payload: ManualEntryPayload): Promise<ReportDetail> {

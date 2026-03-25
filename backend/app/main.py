@@ -9,9 +9,7 @@ from app.core.config import settings
 from app.db.session import init_db
 from app.services.job_manager import job_manager
 from app.services.storage import ensure_storage_directories
-
 logger = logging.getLogger(__name__)
-
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
@@ -35,8 +33,6 @@ async def lifespan(_: FastAPI):
     yield
     job_manager.shutdown()
     logger.info("API shutdown complete.")
-
-
 app = FastAPI(
     title=settings.app_name,
     version="1.0.0",
@@ -54,8 +50,6 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(auth_router, prefix=settings.api_v1_prefix)
 app.include_router(analysis_router, prefix=settings.api_v1_prefix)
-
-
 @app.get("/")
 def read_root() -> dict[str, str]:
     return {

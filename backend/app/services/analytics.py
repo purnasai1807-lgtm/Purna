@@ -1,20 +1,27 @@
 from __future__ import annotations
+
 import re
 from collections.abc import Iterator
 from typing import IO, Any
+
 import numpy as np
 import pandas as pd
 from openpyxl import load_workbook
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 from sklearn.linear_model import LinearRegression
+
 from app.services.modeling import build_modeling_summary
 from app.services.visualization import generate_chart_specs
+
 TYPE_INFERENCE_SAMPLE_SIZE = 2000
 CORRELATION_SAMPLE_SIZE = 15000
 UPLOAD_READ_CHUNK_SIZE = 5000
+
+
 def parse_uploaded_dataframe(filename: str, upload_stream: IO[bytes]) -> pd.DataFrame:
     extension = filename.lower().rsplit(".", maxsplit=1)[-1] if "." in filename else ""
     upload_stream.seek(0)
+
     if extension == "csv":
         return read_csv_in_chunks(upload_stream)
     if extension in {"xlsx", "xlsm", "xltx", "xltm"}:
@@ -26,7 +33,10 @@ def parse_uploaded_dataframe(filename: str, upload_stream: IO[bytes]) -> pd.Data
             return pd.read_json(upload_stream)
         except ValueError as exc:
             raise ValueError("The uploaded JSON file could not be parsed.") from exc
+
     raise ValueError("Unsupported file type. Please upload a CSV, Excel, or JSON file.")
+
+
 def read_csv_in_chunks(upload_stream: IO[bytes]) -> pd.DataFrame:
     chunks: list[pd.DataFrame] = []
     try:
@@ -37,12 +47,17 @@ def read_csv_in_chunks(upload_stream: IO[bytes]) -> pd.DataFrame:
         )
     except pd.errors.EmptyDataError as exc:
         raise ValueError("The uploaded file is empty.") from exc
+
     for chunk in reader:
         chunks.append(chunk)
+
     if chunks:
         return pd.concat(chunks, ignore_index=True)
+
     upload_stream.seek(0)
     return pd.read_csv(upload_stream, nrows=0)
+
+
 def read_excel_in_chunks(upload_stream: IO[bytes]) -> pd.DataFrame:
     workbook = load_workbook(upload_stream, read_only=True, data_only=True)
     try:
@@ -51,19 +66,25 @@ def read_excel_in_chunks(upload_stream: IO[bytes]) -> pd.DataFrame:
         header_row = next(rows, None)
         if header_row is None:
             raise ValueError("The uploaded file is empty.")
+
         columns = build_excel_columns(header_row)
         return build_dataframe_from_excel_rows(rows, columns)
     finally:
         workbook.close()
+
+
 def read_legacy_excel_in_chunks(upload_stream: IO[bytes]) -> pd.DataFrame:
     chunks: list[pd.DataFrame] = []
     rows_to_skip = 0
+
     while True:
         upload_stream.seek(0)
         chunk = pd.read_excel(
             upload_stream,
             nrows=UPLOAD_READ_CHUNK_SIZE,
-            skiprows=(lambda row_index, offset=rows_to_skip: 0 < row_index <= offset)
+            skiprows=(
+                lambda row_index, offset=rows_to_skip: 0 < row_index <= offset
+            )
             if rows_to_skip
             else None,
         )
@@ -72,11 +93,15 @@ def read_legacy_excel_in_chunks(upload_stream: IO[bytes]) -> pd.DataFrame:
             if chunks:
                 break
             return chunk
+
         chunks.append(chunk)
         rows_to_skip += len(chunk)
         if len(chunk) < UPLOAD_READ_CHUNK_SIZE:
             break
+
     return pd.concat(chunks, ignore_index=True)
+
+
 def build_excel_columns(header_row: tuple[Any, ...]) -> list[str]:
     columns: list[str] = []
     for index, value in enumerate(header_row):
@@ -85,35 +110,51 @@ def build_excel_columns(header_row: tuple[Any, ...]) -> list[str]:
         else:
             columns.append(str(value))
     return columns
+
+
 def build_dataframe_from_excel_rows(
     rows: Iterator[tuple[Any, ...]],
     columns: list[str],
 ) -> pd.DataFrame:
     chunks: list[pd.DataFrame] = []
     chunk_rows: list[list[Any]] = []
+
     for row in rows:
         padded_row = list(row[: len(columns)])
         if len(padded_row) < len(columns):
             padded_row.extend([None] * (len(columns) - len(padded_row)))
         chunk_rows.append(padded_row)
+
         if len(chunk_rows) >= UPLOAD_READ_CHUNK_SIZE:
             chunks.append(pd.DataFrame(chunk_rows, columns=columns))
             chunk_rows = []
+
     if chunk_rows:
         chunks.append(pd.DataFrame(chunk_rows, columns=columns))
+
     if chunks:
         return pd.concat(chunks, ignore_index=True)
+
     return pd.DataFrame(columns=columns)
-def parse_manual_dataframe(columns: list[str], rows: list[dict[str, Any]]) -> pd.DataFrame:
+
+
+def parse_manual_dataframe(
+    columns: list[str],
+    rows: list[dict[str, Any]],
+) -> pd.DataFrame:
     if not rows:
         raise ValueError("Manual entry needs at least one populated row.")
+
     dataframe = pd.DataFrame(rows)
     if columns:
         missing_columns = [column for column in columns if column not in dataframe.columns]
         for column in missing_columns:
             dataframe[column] = None
         dataframe = dataframe[columns]
+
     return dataframe
+
+
 def analyze_dataframe(
     dataframe: pd.DataFrame,
     dataset_name: str,
@@ -124,12 +165,16 @@ def analyze_dataframe(
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if dataframe.empty:
-        raise ValueError("The dataset is empty after parsing. Please upload a file with records.")
+        raise ValueError(
+            "The dataset is empty after parsing. Please upload a file with records."
+        )
 
     original_dataframe = dataframe.copy()
     cleaned_dataframe, cleaning_summary = clean_dataframe(dataframe.copy())
     if cleaned_dataframe.empty:
-        raise ValueError("The dataset is empty after cleaning. Please provide rows with actual values.")
+        raise ValueError(
+            "The dataset is empty after cleaning. Please provide rows with actual values."
+        )
 
     normalized_target = normalize_column_name(target_column) if target_column else None
     if normalized_target and normalized_target not in cleaned_dataframe.columns:
@@ -138,7 +183,12 @@ def analyze_dataframe(
             "Use one of the cleaned column names shown in the dashboard."
         )
 
-    overview = build_overview(original_dataframe, cleaned_dataframe, cleaning_summary, normalized_target)
+    overview = build_overview(
+        original_dataframe,
+        cleaned_dataframe,
+        cleaning_summary,
+        normalized_target,
+    )
     summary_statistics = build_summary_statistics(cleaned_dataframe)
     correlations = build_correlation_analysis(cleaned_dataframe)
     outliers = detect_outliers(cleaned_dataframe)
@@ -199,13 +249,17 @@ def build_section_status(*, charts_ready: bool) -> dict[str, bool]:
 def clean_dataframe(dataframe: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
     original_shape = dataframe.shape
     original_columns = [str(column) for column in dataframe.columns]
-    standardized_columns = make_unique([normalize_column_name(column) for column in dataframe.columns])
+    standardized_columns = make_unique(
+        [normalize_column_name(column) for column in dataframe.columns]
+    )
     dataframe.columns = standardized_columns
 
     empty_rows_dropped = int(dataframe.isna().all(axis=1).sum())
     dataframe = dataframe.dropna(how="all")
 
-    all_null_columns = [column for column in dataframe.columns if dataframe[column].isna().all()]
+    all_null_columns = [
+        column for column in dataframe.columns if dataframe[column].isna().all()
+    ]
     dataframe = dataframe.drop(columns=all_null_columns)
 
     for column in dataframe.columns:
@@ -307,7 +361,9 @@ def build_overview(
         "original_row_count": int(original_dataframe.shape[0]),
         "original_column_count": int(original_dataframe.shape[1]),
         "target_column": target_column,
-        "preview_rows": sanitize_for_json(cleaned_dataframe.head(12).to_dict(orient="records")),
+        "preview_rows": sanitize_for_json(
+            cleaned_dataframe.head(12).to_dict(orient="records")
+        ),
         "columns": profiles,
         "detected_data_types": cleaning_summary.get("detected_data_types", {}),
     }
@@ -347,7 +403,12 @@ def build_summary_statistics(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
             value_counts = series.astype(str).value_counts()
             top_value = value_counts.index[0] if not value_counts.empty else None
             top_frequency = int(value_counts.iloc[0]) if not value_counts.empty else 0
-            base_stats.update({"top_value": top_value, "top_frequency": top_frequency})
+            base_stats.update(
+                {
+                    "top_value": top_value,
+                    "top_frequency": top_frequency,
+                }
+            )
 
         statistics.append(sanitize_for_json(base_stats))
 
@@ -357,7 +418,10 @@ def build_summary_statistics(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
 def build_correlation_analysis(dataframe: pd.DataFrame) -> dict[str, Any]:
     numeric_dataframe = dataframe.select_dtypes(include=[np.number])
     if len(numeric_dataframe) > CORRELATION_SAMPLE_SIZE:
-        numeric_dataframe = numeric_dataframe.sample(n=CORRELATION_SAMPLE_SIZE, random_state=42)
+        numeric_dataframe = numeric_dataframe.sample(
+            n=CORRELATION_SAMPLE_SIZE,
+            random_state=42,
+        )
 
     if numeric_dataframe.shape[1] < 2:
         return {"available": False, "columns": [], "matrix": [], "strongest_pairs": []}
@@ -371,7 +435,10 @@ def build_correlation_analysis(dataframe: pd.DataFrame) -> dict[str, Any]:
                 {
                     "left_column": left_column,
                     "right_column": right_column,
-                    "correlation": round(float(correlation_matrix.loc[left_column, right_column]), 3),
+                    "correlation": round(
+                        float(correlation_matrix.loc[left_column, right_column]),
+                        3,
+                    ),
                 }
             )
 
@@ -425,8 +492,14 @@ def analyze_trends(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
     if not numeric_columns:
         return []
 
-    datetime_columns = [column for column in dataframe.columns if is_datetime64_any_dtype(dataframe[column])]
-    ordered_dataframe = dataframe.sort_values(datetime_columns[0]) if datetime_columns else dataframe.copy()
+    datetime_columns = [
+        column for column in dataframe.columns if is_datetime64_any_dtype(dataframe[column])
+    ]
+    ordered_dataframe = (
+        dataframe.sort_values(datetime_columns[0])
+        if datetime_columns
+        else dataframe.copy()
+    )
     x_values = np.arange(len(ordered_dataframe)).reshape(-1, 1)
     basis = datetime_columns[0] if datetime_columns else "row_order"
     trend_results: list[dict[str, Any]] = []
@@ -439,7 +512,9 @@ def analyze_trends(dataframe: pd.DataFrame) -> list[dict[str, Any]]:
                     "column": column,
                     "direction": "stable",
                     "basis": basis,
-                    "description": f"{column} stays mostly stable across the available records.",
+                    "description": (
+                        f"{column} stays mostly stable across the available records."
+                    ),
                 }
             )
             continue
@@ -486,39 +561,51 @@ def build_narrative(
 
     insights.append(
         f"The dataset was cleaned from {overview['original_row_count']} rows to "
-        f"{overview['row_count']} rows and now contains {overview['column_count']} usable columns."
+        f"{overview['row_count']} rows and now contains "
+        f"{overview['column_count']} usable columns."
     )
 
     if cleaning.get("duplicate_rows_removed"):
-        insights.append(f"{cleaning['duplicate_rows_removed']} duplicate rows were removed before analysis.")
+        insights.append(
+            f"{cleaning['duplicate_rows_removed']} duplicate rows were removed before analysis."
+        )
 
     missing_before = cleaning.get("missing_values_before", 0)
     missing_after = cleaning.get("missing_values_after", 0)
     if missing_before:
-        insights.append(f"The pipeline handled {missing_before - missing_after} missing values automatically.")
+        insights.append(
+            f"The pipeline handled {missing_before - missing_after} missing values automatically."
+        )
         recommendations.append(
-            "Review the columns with imputed values and strengthen data collection rules upstream."
+            "Review the columns with imputed values and strengthen data collection "
+            "rules upstream."
         )
 
     strongest_pairs = correlations.get("strongest_pairs", [])
     if strongest_pairs:
         strongest = strongest_pairs[0]
         insights.append(
-            f"{strongest['left_column']} and {strongest['right_column']} move together with "
-            f"a correlation of {strongest['correlation']}."
+            f"{strongest['left_column']} and {strongest['right_column']} move "
+            f"together with a correlation of {strongest['correlation']}."
         )
         recommendations.append(
-            "Use the strongest correlated features when prioritizing KPI drivers or dashboard alerts."
+            "Use the strongest correlated features when prioritizing KPI drivers "
+            "or dashboard alerts."
         )
 
     if outliers:
-        highest_outlier = sorted(outliers, key=lambda item: item["count"], reverse=True)[0]
+        highest_outlier = sorted(
+            outliers,
+            key=lambda item: item["count"],
+            reverse=True,
+        )[0]
         insights.append(
-            f"{highest_outlier['column']} contains {highest_outlier['count']} potential outliers "
-            f"({highest_outlier['percentage']}% of records)."
+            f"{highest_outlier['column']} contains {highest_outlier['count']} "
+            f"potential outliers ({highest_outlier['percentage']}% of records)."
         )
         recommendations.append(
-            "Inspect the largest outlier columns to confirm whether extreme values are real events or data quality issues."
+            "Inspect the largest outlier columns to confirm whether extreme values "
+            "are real events or data quality issues."
         )
 
     if trends:
@@ -530,33 +617,42 @@ def build_narrative(
         metrics = modeling.get("metrics", {})
         if mode == "regression":
             insights.append(
-                f"{selected_model} achieved an R2 score of {metrics.get('r2', 'n/a')} on the held-out test split."
+                f"{selected_model} achieved an R2 score of {metrics.get('r2', 'n/a')} "
+                "on the held-out test split."
             )
             recommendations.append(
-                "If you need stronger forecasts, add more business context columns and compare the recommended regressors."
+                "If you need stronger forecasts, add more business context columns "
+                "and compare the recommended regressors."
             )
         elif mode == "classification":
             insights.append(
-                f"{selected_model} reached {metrics.get('accuracy', 'n/a')} accuracy on the held-out test split."
+                f"{selected_model} reached {metrics.get('accuracy', 'n/a')} accuracy "
+                "on the held-out test split."
             )
             recommendations.append(
-                "Validate class imbalance and consider threshold tuning before operationalizing predictions."
+                "Validate class imbalance and consider threshold tuning before "
+                "operationalizing predictions."
             )
         else:
             insights.append(
-                f"KMeans found {len(modeling.get('cluster_summary', {}))} segments with a silhouette score of "
-                f"{metrics.get('silhouette_score', 'n/a')}."
+                f"KMeans found {len(modeling.get('cluster_summary', {}))} segments "
+                f"with a silhouette score of {metrics.get('silhouette_score', 'n/a')}."
             )
             recommendations.append(
-                "Review cluster segments with domain experts and label them for sales, customer, or operational actions."
+                "Review cluster segments with domain experts and label them for "
+                "sales, customer, or operational actions."
             )
     else:
         recommendations.append(
-            "Provide a target column when you want supervised model evaluation for forecasting or classification."
+            "Provide a target column when you want supervised model evaluation for "
+            "forecasting or classification."
         )
 
     if not recommendations:
-        recommendations.append("The dataset is analysis-ready. Review the charts and model recommendations for next steps.")
+        recommendations.append(
+            "The dataset is analysis-ready. Review the charts and model "
+            "recommendations for next steps."
+        )
 
     return insights[:6], recommendations[:6]
 
@@ -602,6 +698,7 @@ def normalize_column_name(value: Any) -> str:
 def make_unique(columns: list[str]) -> list[str]:
     counts: dict[str, int] = {}
     unique_columns: list[str] = []
+
     for column in columns:
         count = counts.get(column, 0)
         if count == 0:
@@ -609,4 +706,5 @@ def make_unique(columns: list[str]) -> list[str]:
         else:
             unique_columns.append(f"{column}_{count + 1}")
         counts[column] = count + 1
+
     return unique_columns

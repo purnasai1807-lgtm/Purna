@@ -38,7 +38,12 @@ function copyResponseHeaders(response: Response): Headers {
 
 function isUploadRoute(path: string[]): boolean {
   const joinedPath = path.join("/");
-  return joinedPath === "api/v1/analysis/upload" || joinedPath.endsWith("/analysis/upload");
+  return (
+    joinedPath === "api/v1/analysis/upload" ||
+    joinedPath.endsWith("/analysis/upload") ||
+    joinedPath === "api/v1/analysis/uploads/session" ||
+    joinedPath.startsWith("api/v1/analysis/uploads/")
+  );
 }
 
 function buildProxyUpstreamError(path: string[], status: number, fallback: string): string {
@@ -58,7 +63,7 @@ async function forwardRequest(
   request: NextRequest,
   context: { params: { path: string[] } }
 ): Promise<Response> {
-  if (request.method.toUpperCase() === "POST" && isUploadRoute(context.params.path)) {
+  if (isUploadRoute(context.params.path)) {
     return Response.json(
       {
         detail:

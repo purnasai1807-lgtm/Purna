@@ -44,6 +44,14 @@ services:
         sync: false
       - key: S3_PREFIX
         value: uploads
+      - key: S3_PRESIGN_EXPIRY_SECONDS
+        value: 900
+      - key: S3_MULTIPART_CHUNK_SIZE_MB
+        value: 8
+      - key: UPLOAD_SESSION_EXPIRY_MINUTES
+        value: 1440
+      - key: UPLOAD_CLEANUP_INTERVAL_MINUTES
+        value: 30
       - key: CORS_ORIGINS
         value: https://auto-analytics-ai-web.onrender.com
       - key: REPORT_BASE_URL
@@ -53,7 +61,7 @@ services:
     env: python
     rootDir: backend
     buildCommand: pip install -r requirements.txt
-    startCommand: celery -A app.services.celery_app.celery_app worker --loglevel=info --concurrency=2 -Q analytics
+    startCommand: celery -A app.services.celery_app.celery_app worker -B --loglevel=info --concurrency=2 -Q analytics
     envVars:
       - key: APP_ENV
         value: production
@@ -89,6 +97,14 @@ services:
         sync: false
       - key: S3_PREFIX
         value: uploads
+      - key: S3_PRESIGN_EXPIRY_SECONDS
+        value: 900
+      - key: S3_MULTIPART_CHUNK_SIZE_MB
+        value: 8
+      - key: UPLOAD_SESSION_EXPIRY_MINUTES
+        value: 1440
+      - key: UPLOAD_CLEANUP_INTERVAL_MINUTES
+        value: 30
   - type: web
     name: auto-analytics-ai-web
     env: node
@@ -102,3 +118,5 @@ services:
         value: /api/proxy/api/v1
       - key: NEXT_PUBLIC_DIRECT_BACKEND_API_URL
         value: https://auto-analytics-ai-api.onrender.com/api/v1
+      - key: NEXT_PUBLIC_USE_DIRECT_STORAGE_UPLOADS
+        value: true
