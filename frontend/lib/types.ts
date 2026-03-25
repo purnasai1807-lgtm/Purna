@@ -36,15 +36,43 @@ export type ChartSpec = {
 
 export type HistoryItem = {
   id: string;
+  job_id?: string | null;
+  job_status_url?: string | null;
   dataset_name: string;
   source_type: string;
   target_column: string | null;
   row_count: number;
   column_count: number;
   status: string;
+  progress: number;
+  progress_message: string | null;
+  processing_mode: string | null;
+  file_type: string | null;
+  file_size_bytes: number | null;
+  error_message: string | null;
   share_token: string;
   share_url: string;
   created_at: string;
+};
+
+export type JobStatus = {
+  job_id: string;
+  report_id: string;
+  dataset_name: string;
+  status: string;
+  progress: number;
+  message?: string | null;
+  progress_message: string | null;
+  processing_mode: string | null;
+  file_type: string | null;
+  file_size_bytes: number | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  failed_at?: string | null;
+  result?: ReportPayload | null;
 };
 
 export type ReportColumnProfile = {
@@ -61,13 +89,13 @@ export type SummaryStatistic = {
   dtype: string;
   non_null_count: number;
   unique_values: number;
-  mean?: number;
-  median?: number;
-  std?: number;
+  mean?: number | null;
+  median?: number | null;
+  std?: number | null;
   min?: number | string | null;
   max?: number | string | null;
-  q1?: number;
-  q3?: number;
+  q1?: number | null;
+  q3?: number | null;
   top_value?: string | number | null;
   top_frequency?: number;
 };
@@ -118,6 +146,34 @@ export type ModelingSummary = {
   reason?: string;
 };
 
+export type ReportSectionStatus = {
+  overview: boolean;
+  summary_statistics: boolean;
+  correlations: boolean;
+  outliers: boolean;
+  trends: boolean;
+  charts: boolean;
+  rows: boolean;
+  modeling: boolean;
+  insights: boolean;
+  recommendations: boolean;
+};
+
+export type ReportMetadata = {
+  is_preview: boolean;
+  processing_mode: string;
+  file_type?: string | null;
+  file_size_bytes?: number | null;
+  sample_row_count?: number | null;
+  cache_hit?: boolean;
+  job_id?: string | null;
+  optimized_mode?: boolean;
+  processing_strategy?: string | null;
+  sample_strategy?: string | null;
+  max_upload_size_bytes?: number | null;
+  storage_backend?: string | null;
+};
+
 export type ReportPayload = {
   dataset_name: string;
   source_type: string;
@@ -156,6 +212,8 @@ export type ReportPayload = {
   modeling: ModelingSummary;
   insights: string[];
   recommendations: string[];
+  metadata: ReportMetadata;
+  sections: ReportSectionStatus;
 };
 
 export type ReportDetail = HistoryItem & {
@@ -174,3 +232,17 @@ export type ShareLinkResponse = {
   share_url: string;
 };
 
+export type ReportRowsPage = {
+  page: number;
+  page_size: number;
+  total_rows: number;
+  total_pages: number;
+  columns: string[];
+  rows: Record<string, string | number | boolean | null>[];
+  is_preview: boolean;
+};
+
+export type ReportSectionResponse<T = unknown> = {
+  section: string;
+  data: T;
+};

@@ -20,14 +20,49 @@ export default function SharedReportPage() {
       return;
     }
 
-    getSharedReport(params.token)
-      .then((nextReport) => setReport(nextReport))
-      .catch((sharedError) =>
+    let isCancelled = false;
+    let timeoutId: number | undefined;
+
+    async function loadSharedReport(showSpinner: boolean) {
+      if (showSpinner) {
+        setIsLoading(true);
+      }
+
+      try {
+        const nextReport = await getSharedReport(params.token);
+        if (isCancelled) {
+          return;
+        }
+
+        setReport(nextReport);
+        setError("");
+
+        if (!["completed", "failed"].includes(nextReport.status)) {
+          timeoutId = window.setTimeout(() => void loadSharedReport(false), 3500);
+        }
+      } catch (sharedError) {
+        if (isCancelled) {
+          return;
+        }
+
         setError(
           sharedError instanceof Error ? sharedError.message : "This shared report could not be loaded."
-        )
-      )
-      .finally(() => setIsLoading(false));
+        );
+      } finally {
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
+      }
+    }
+
+    void loadSharedReport(true);
+
+    return () => {
+      isCancelled = true;
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+    };
   }, [params?.token]);
 
   if (isLoading) {
@@ -42,7 +77,7 @@ export default function SharedReportPage() {
     <main className="page-shell">
       <div className="shell">
         {error ? <div className="notice notice--error">{error}</div> : null}
-        {report ? <AnalysisDashboard report={report} isPublic /> : null}
+        {report ? <AnalysisDashboard report={report} isPublic shareToken={params?.token ?? null} /> : null}
       </div>
     </main>
   );

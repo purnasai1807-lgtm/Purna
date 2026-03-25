@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -61,4 +61,66 @@ class AnalysisReport(TimestampMixin, Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     user: Mapped[User] = relationship(back_populates="reports")
+    cache_link: Mapped["AnalysisReportCacheLink | None"] = relationship(
+        back_populates="report",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
+
+class AnalysisCacheEntry(TimestampMixin, Base):
+    __tablename__ = "analysis_cache_entries"
+    __table_args__ = (
+        UniqueConstraint("content_hash", "target_column", name="uq_analysis_cache_entries_hash_target"),
+        Index("ix_analysis_cache_entries_status_updated_at", "status", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    content_hash: Mapped[str] = mapped_column(String(128), index=True)
+    original_filename: Mapped[str] = mapped_column(String(255))
+    file_type: Mapped[str] = mapped_column(String(30))
+    target_column: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    processing_mode: Mapped[str] = mapped_column(String(20), default="small")
+    status: Mapped[str] = mapped_column(String(20), default="queued")
+    progress: Mapped[int] = mapped_column(Integer, default=0)
+    progress_message: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    file_size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    row_count: Mapped[int] = mapped_column(Integer, default=0)
+    column_count: Mapped[int] = mapped_column(Integer, default=0)
+    storage_backend: Mapped[str] = mapped_column(String(20), default="local")
+    storage_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    storage_path: Mapped[str] = mapped_column(Text)
+    parquet_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    preview_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    full_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    sections_ready: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    report_links: Mapped[list["AnalysisReportCacheLink"]] = relationship(
+        back_populates="cache_entry",
+        cascade="all, delete-orphan",
+    )
+
+
+class AnalysisReportCacheLink(Base):
+    __tablename__ = "analysis_report_cache_links"
+    __table_args__ = (
+        Index("ix_analysis_report_cache_links_cache_entry_id", "cache_entry_id"),
+    )
+
+    report_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("analysis_reports.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    cache_entry_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("analysis_cache_entries.id", ondelete="CASCADE"),
+    )
+
+    report: Mapped[AnalysisReport] = relationship(back_populates="cache_link")
+    cache_entry: Mapped[AnalysisCacheEntry] = relationship(back_populates="report_links")

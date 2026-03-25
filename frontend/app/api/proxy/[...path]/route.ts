@@ -36,10 +36,38 @@ function copyResponseHeaders(response: Response): Headers {
   return headers;
 }
 
+function isUploadRoute(path: string[]): boolean {
+  const joinedPath = path.join("/");
+  return joinedPath === "api/v1/analysis/upload" || joinedPath.endsWith("/analysis/upload");
+}
+
+function buildProxyUpstreamError(path: string[], status: number, fallback: string): string {
+  if (![502, 503, 504].includes(status)) {
+    return fallback;
+  }
+
+  const joinedPath = path.join("/");
+  if (joinedPath === "health" || joinedPath.endsWith("/health")) {
+    return "Backend is waking up or temporarily unreachable. Please wait a few seconds and try again.";
+  }
+
+  return "The backend is temporarily unavailable. Please wait a few seconds and try again.";
+}
+
 async function forwardRequest(
   request: NextRequest,
   context: { params: { path: string[] } }
 ): Promise<Response> {
+  if (request.method.toUpperCase() === "POST" && isUploadRoute(context.params.path)) {
+    return Response.json(
+      {
+        detail:
+          "Direct backend upload required. Configure NEXT_PUBLIC_DIRECT_BACKEND_API_URL to point at the FastAPI service."
+      },
+      { status: 400 }
+    );
+  }
+
   const method = request.method.toUpperCase();
   const targetUrl = buildTargetUrl(context.params.path, request.nextUrl.search);
   const timeoutMs =
@@ -60,6 +88,14 @@ async function forwardRequest(
       cache: "no-store",
       signal: controller.signal,
     });
+
+    if ([502, 503, 504].includes(response.status)) {
+      const fallbackDetail = response.statusText || "The backend is temporarily unavailable.";
+      return Response.json(
+        { detail: buildProxyUpstreamError(context.params.path, response.status, fallbackDetail) },
+        { status: response.status }
+      );
+    }
 
     return new Response(response.body, {
       status: response.status,

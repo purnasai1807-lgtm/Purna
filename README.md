@@ -69,7 +69,7 @@ Key frontend files:
 Frontend environment variables:
 
 ```bash
-NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1
+NEXT_PUBLIC_API_BASE_URL=/api/proxy/api/v1
 LOCAL_BACKEND_API_URL=http://127.0.0.1:8000/api/v1
 NEXT_PUBLIC_DIRECT_BACKEND_API_URL=http://127.0.0.1:8000/api/v1
 ```
@@ -96,6 +96,14 @@ ACCESS_TOKEN_EXPIRE_MINUTES=1440
 DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/auto_analytics_ai
 CORS_ORIGINS=http://localhost:3000,https://your-vercel-app.vercel.app
 REPORT_BASE_URL=http://localhost:3000
+MAX_UPLOAD_SIZE_MB=200
+SMALL_FILE_THRESHOLD_MB=10
+MEDIUM_FILE_THRESHOLD_MB=50
+BACKGROUND_JOB_BACKEND=threadpool
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/1
+STORAGE_BACKEND=local
+S3_BUCKET_NAME=
 ```
 
 ## 5. Database Schema
@@ -158,16 +166,22 @@ This keeps the app running after VS Code is closed, but it still depends on your
 ### Backend on Render
 1. Push this repo to GitHub.
 2. Create a Neon PostgreSQL database and copy the connection string.
-3. In Render, create a new Web Service from the repo.
-4. Set the service root directory to `backend`.
-5. Use build command: `pip install -r requirements.txt`
-6. Use start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-7. Add environment variables:
+3. Create an S3-compatible bucket for uploaded source files and Parquet staging.
+4. In Render, use the included [`render.yaml`](./render.yaml) blueprint so the stack provisions:
+   - FastAPI web service
+   - Celery worker service
+   - Redis broker/result backend
+5. Add environment variables:
    - `DATABASE_URL`
    - `SECRET_KEY`
    - `CORS_ORIGINS`
    - `REPORT_BASE_URL`
-8. Deploy and verify `https://your-backend-domain/health`
+   - `S3_BUCKET_NAME`
+   - `S3_REGION`
+   - `S3_ENDPOINT_URL` if your provider requires one
+   - `S3_ACCESS_KEY_ID`
+   - `S3_SECRET_ACCESS_KEY`
+6. Deploy and verify `https://your-backend-domain/health`
 
 ### Frontend on Vercel
 1. Import the same repo into Vercel.
@@ -214,8 +228,7 @@ Included sample data:
 ## 11. Future Improvements
 
 - Replace single-model baselines with full AutoML comparison pipelines
-- Add background jobs for large-file processing
 - Add role-based access control and team workspaces
 - Add refresh tokens or cookie-based auth hardening
 - Add schema-drift detection and richer PDF branding
-- Add object storage for uploaded source files and generated assets
+- Add lifecycle cleanup for old uploaded source files and generated assets

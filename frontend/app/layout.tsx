@@ -2,9 +2,7 @@ import type { Metadata } from "next";
 import { Manrope, Space_Grotesk } from "next/font/google";
 import type { ReactNode } from "react";
 
-import { SiteHeader } from "@/components/layout/site-header";
-import { AuthProvider } from "@/components/providers/auth-provider";
-import { ConnectionBanner } from "@/components/system/connection-banner";
+import { AppShell } from "@/components/layout/app-shell";
 
 import "./globals.css";
 
@@ -31,11 +29,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${bodyFont.variable} ${headingFont.variable}`}>
-        <AuthProvider>
-          <SiteHeader />
-          <ConnectionBanner />
-          {children}
-        </AuthProvider>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );

@@ -303,7 +303,8 @@ main {
 .chart-grid,
 .stats-grid,
 .history-list,
-.chip-list {
+.chip-list,
+.upload-hint-grid {
   display: grid;
   gap: 1rem;
 }
@@ -315,7 +316,9 @@ main {
 .feature-card,
 .history-card,
 .stat-card,
-.insight-card {
+.insight-card,
+.upload-hint-card,
+.progress-card {
   border-radius: var(--radius-md);
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.8);
@@ -324,7 +327,9 @@ main {
 .feature-card,
 .history-card,
 .stat-card,
-.insight-card {
+.insight-card,
+.upload-hint-card,
+.progress-card {
   padding: 1.1rem;
 }
 
@@ -348,6 +353,25 @@ main {
   display: flex;
   gap: 0.75rem;
   flex-wrap: wrap;
+}
+
+.upload-hint-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.upload-hint-card {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.upload-hint-card strong {
+  font-family: var(--font-heading);
+}
+
+.upload-hint-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
 }
 
 .button {
@@ -581,9 +605,60 @@ main {
   gap: 0.8rem;
 }
 
+.history-card__title-row,
+.history-card__facts {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.history-card__facts {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .history-card__meta {
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.progress-card {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.progress-card--compact {
+  padding: 0.9rem 1rem;
+}
+
+.progress-card__meta,
+.pagination-bar {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.progress-card__meta span,
+.pagination-bar span {
+  color: var(--muted);
+}
+
+.progress-track {
+  height: 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(13, 148, 136, 0.12);
+}
+
+.progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--warm));
 }
 
 .notice {
@@ -812,6 +887,10 @@ main {
   gap: 0.85rem;
 }
 
+.analytics-kpi-rail--compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .metric-tile {
   display: grid;
   gap: 0.4rem;
@@ -865,6 +944,10 @@ main {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.9fr) minmax(280px, 0.9fr);
   gap: 1rem;
+}
+
+.analytics-summary-grid--two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .highlight-grid {
@@ -1048,6 +1131,13 @@ main {
   color: rgba(52, 25, 94, 0.68);
 }
 
+.lazy-shell {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  text-align: center;
+}
+
 .analysis-dashboard .table-shell {
   background: rgba(255, 255, 255, 0.38);
   border: 2px solid rgba(53, 23, 97, 0.18);
@@ -1088,12 +1178,15 @@ main {
 
   .analytics-hero,
   .analytics-summary-grid,
+  .analytics-summary-grid--two,
   .analytics-detail-grid,
   .analytics-story-grid,
   .model-suggestion-grid,
   .signal-card-grid,
   .highlight-grid,
-  .model-metric-grid {
+  .model-metric-grid,
+  .upload-hint-grid,
+  .analytics-kpi-rail--compact {
     grid-template-columns: 1fr;
   }
 

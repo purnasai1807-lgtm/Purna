@@ -1,19 +1,31 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { checkApiHealth } from "@/lib/api";
 
 type ConnectionState = "checking" | "connected" | "offline" | "unreachable";
+const RETRY_DELAY_MS = 5000;
 
 export function ConnectionBanner() {
   const [state, setState] = useState<ConnectionState>("checking");
   const [isRetrying, setIsRetrying] = useState(false);
+  const retryTimeoutRef = useRef<number | null>(null);
+  const retryConnectionRef = useRef<() => Promise<void>>(async () => undefined);
 
   useEffect(() => {
     let cancelled = false;
 
-    async function verifyConnection() {
+    function clearRetryTimeout() {
+      if (retryTimeoutRef.current !== null) {
+        window.clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
+    }
+
+    async function verifyConnection(scheduleRetry = true) {
+      clearRetryTimeout();
+
       if (!navigator.onLine) {
         if (!cancelled) {
           setState("offline");
@@ -35,6 +47,13 @@ export function ConnectionBanner() {
       } catch {
         if (!cancelled) {
           setState("unreachable");
+          if (scheduleRetry && navigator.onLine) {
+            retryTimeoutRef.current = window.setTimeout(() => {
+              if (!cancelled) {
+                void verifyConnection();
+              }
+            }, RETRY_DELAY_MS);
+          }
         }
       } finally {
         if (!cancelled) {
@@ -44,6 +63,7 @@ export function ConnectionBanner() {
     }
 
     function handleOffline() {
+      clearRetryTimeout();
       setState("offline");
       setIsRetrying(false);
     }
@@ -54,10 +74,11 @@ export function ConnectionBanner() {
 
     function handleVisibilityChange() {
       if (document.visibilityState === "visible") {
-        void verifyConnection();
+        void verifyConnection(false);
       }
     }
 
+    retryConnectionRef.current = () => verifyConnection();
     void verifyConnection();
     window.addEventListener("offline", handleOffline);
     window.addEventListener("online", handleOnline);
@@ -65,6 +86,8 @@ export function ConnectionBanner() {
 
     return () => {
       cancelled = true;
+      clearRetryTimeout();
+      retryConnectionRef.current = async () => undefined;
       window.removeEventListener("offline", handleOffline);
       window.removeEventListener("online", handleOnline);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
@@ -72,22 +95,13 @@ export function ConnectionBanner() {
   }, []);
 
   async function handleRetryConnection() {
-    setIsRetrying(true);
-    setState(navigator.onLine ? "checking" : "offline");
-
     if (!navigator.onLine) {
+      setState("offline");
       setIsRetrying(false);
       return;
     }
 
-    try {
-      await checkApiHealth();
-      setState("connected");
-    } catch {
-      setState("unreachable");
-    } finally {
-      setIsRetrying(false);
-    }
+    await retryConnectionRef.current();
   }
 
   if (state === "connected") {
@@ -98,8 +112,8 @@ export function ConnectionBanner() {
     state === "offline"
       ? "You appear to be offline. Please check your internet connection and try again."
       : state === "checking"
-        ? "Connecting to the analytics service. Please wait a moment."
-        : "The analytics service is waking up or temporarily unreachable. Please wait a few seconds and retry.";
+        ? "Connecting to the analytics backend. Please wait a moment."
+        : "Backend is waking up or temporarily unreachable. Retrying automatically every few seconds.";
 
   return (
     <div className="connection-banner">

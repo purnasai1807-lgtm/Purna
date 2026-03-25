@@ -65,7 +65,7 @@ if (-not $env:LOCAL_BACKEND_API_URL) {
     $env:LOCAL_BACKEND_API_URL = "http://127.0.0.1:8000/api/v1"
 }
 if (-not $env:NEXT_PUBLIC_DIRECT_BACKEND_API_URL) {
-    $env:NEXT_PUBLIC_DIRECT_BACKEND_API_URL = "/api/proxy/api/v1"
+    $env:NEXT_PUBLIC_DIRECT_BACKEND_API_URL = "http://127.0.0.1:8000/api/v1"
 }
 
 try {

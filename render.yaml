@@ -1,4 +1,7 @@
 services:
+  - type: keyvalue
+    name: auto-analytics-ai-redis
+    ipAllowList: []
   - type: web
     name: auto-analytics-ai-api
     env: python
@@ -7,14 +10,85 @@ services:
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
+      - key: APP_ENV
+        value: production
       - key: DATABASE_URL
         sync: false
       - key: SECRET_KEY
         sync: false
+      - key: BACKGROUND_JOB_BACKEND
+        value: celery
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: keyvalue
+          name: auto-analytics-ai-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: keyvalue
+          name: auto-analytics-ai-redis
+          property: connectionString
+      - key: CELERY_QUEUE_NAME
+        value: analytics
+      - key: STORAGE_BACKEND
+        value: s3
+      - key: S3_BUCKET_NAME
+        sync: false
+      - key: S3_REGION
+        sync: false
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_PREFIX
+        value: uploads
       - key: CORS_ORIGINS
-        sync: false
+        value: https://auto-analytics-ai-web.onrender.com
       - key: REPORT_BASE_URL
+        value: https://auto-analytics-ai-web.onrender.com
+  - type: worker
+    name: auto-analytics-ai-worker
+    env: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: celery -A app.services.celery_app.celery_app worker --loglevel=info --concurrency=2 -Q analytics
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
         sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: BACKGROUND_JOB_BACKEND
+        value: celery
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: keyvalue
+          name: auto-analytics-ai-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: keyvalue
+          name: auto-analytics-ai-redis
+          property: connectionString
+      - key: CELERY_QUEUE_NAME
+        value: analytics
+      - key: STORAGE_BACKEND
+        value: s3
+      - key: S3_BUCKET_NAME
+        sync: false
+      - key: S3_REGION
+        sync: false
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_PREFIX
+        value: uploads
   - type: web
     name: auto-analytics-ai-web
     env: node

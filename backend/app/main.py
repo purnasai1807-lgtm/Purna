@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,12 +7,34 @@ from app.api.routes.auth import router as auth_router
 from app.api.routes.health import router as health_router
 from app.core.config import settings
 from app.db.session import init_db
+from app.services.job_manager import job_manager
+from app.services.storage import ensure_storage_directories
 
+logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    ensure_storage_directories()
+    resumed_jobs = job_manager.resume_pending()
+    if settings.background_job_backend.strip().lower() == "celery" and not settings.celery_broker_url:
+        logger.warning("Celery background mode requested without CELERY_BROKER_URL. Falling back to in-process jobs.")
+    if settings.uses_celery_workers and settings.app_env != "development" and not settings.uses_s3_storage:
+        logger.warning(
+            "Celery workers are enabled without S3-compatible storage. Configure STORAGE_BACKEND=s3 and S3_* env vars for distributed uploads."
+        )
+    logger.info(
+        "API startup complete: env=%s storage_root=%s storage_backend=%s background_backend=%s report_base_url=%s resumed_jobs=%s",
+        settings.app_env,
+        settings.resolved_storage_root,
+        settings.storage_backend,
+        settings.background_job_backend,
+        settings.report_base_url,
+        resumed_jobs,
+    )
     yield
+    job_manager.shutdown()
+    logger.info("API shutdown complete.")
 
 
 app = FastAPI(

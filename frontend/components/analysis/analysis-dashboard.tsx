@@ -1,59 +1,106 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { ChartRenderer } from "@/components/charts/chart-renderer";
-import { downloadPdf } from "@/lib/api";
-import type { ModelingSummary, ReportDetail, ReportPayload } from "@/lib/types";
-import { buildShareUrl, copyToClipboard, formatDate, formatLabel, formatMetric } from "@/lib/utils";
+import {
+  downloadPdf,
+  getReportRows,
+  getReportSection,
+  getSharedReportRows,
+  getSharedReportSection
+} from "@/lib/api";
+import type {
+  ChartSpec,
+  ModelingSummary,
+  ReportDetail,
+  ReportPayload,
+  ReportRowsPage
+} from "@/lib/types";
+import {
+  buildShareUrl,
+  copyToClipboard,
+  formatBytes,
+  formatDate,
+  formatLabel,
+  formatMetric,
+  formatStatus
+} from "@/lib/utils";
 
 type AnalysisDashboardProps = {
   report: ReportDetail;
   token?: string | null;
   isPublic?: boolean;
-};
-
-type ExecutiveMetric = {
-  label: string;
-  value: string;
-  note: string;
-  tone: "plum" | "gold" | "sky" | "mint";
-};
-
-type HealthMetric = {
-  label: string;
-  value: string;
-  percentage: number;
-  tone: "plum" | "gold" | "sky" | "mint";
-};
-
-type RankingRow = {
-  label: string;
-  value: string;
-  caption: string;
-  width: number;
+  shareToken?: string | null;
 };
 
 export function AnalysisDashboard({
   report,
   token = null,
-  isPublic = false
+  isPublic = false,
+  shareToken = null
 }: AnalysisDashboardProps) {
   const [actionState, setActionState] = useState<"idle" | "copying" | "downloading">("idle");
   const [actionError, setActionError] = useState("");
+  const [charts, setCharts] = useState<ChartSpec[]>(report.report.charts ?? []);
+  const [isChartsLoading, setIsChartsLoading] = useState(false);
+  const [chartsError, setChartsError] = useState("");
+  const [showExplorer, setShowExplorer] = useState(false);
+  const [rowsPage, setRowsPage] = useState<ReportRowsPage | null>(null);
+  const [rowsPageNumber, setRowsPageNumber] = useState(1);
+  const [isRowsLoading, setIsRowsLoading] = useState(false);
+  const [rowsError, setRowsError] = useState("");
+
   const payload = report.report;
   const modeling = payload.modeling;
-  const metrics = modeling.metrics ?? {};
   const previewColumns = payload.overview.columns.map((item) => item.column);
-  const highlightedInsights = payload.insights.slice(0, 4);
-  const recommendedActions = payload.recommendations.slice(0, 5);
   const strongestCorrelation = getStrongestCorrelation(payload);
-  const primaryMetric = getPrimaryMetric(modeling);
-  const executiveMetrics = buildExecutiveMetrics(payload, modeling, strongestCorrelation, primaryMetric);
-  const healthMetrics = buildHealthMetrics(payload);
-  const rankingRows = buildRankingRows(modeling);
-  const signalCards = buildSignalCards(payload, strongestCorrelation);
-  const selectedModelLabel = modeling.selected_model ?? formatLabel(modeling.mode);
+  const isProcessing = !["completed", "failed"].includes(report.status);
+  const canLoadCharts = payload.sections.charts || charts.length > 0 || !isProcessing;
+  const topMetrics = buildTopMetrics(payload, report, strongestCorrelation);
+
+  useEffect(() => {
+    setCharts(report.report.charts ?? []);
+    setRowsPage(null);
+    setRowsPageNumber(1);
+    setShowExplorer(false);
+    setChartsError("");
+    setRowsError("");
+  }, [report.id, report.report.charts]);
+
+  useEffect(() => {
+    if (!showExplorer) {
+      return;
+    }
+
+    let isCancelled = false;
+
+    async function loadRows() {
+      setIsRowsLoading(true);
+      setRowsError("");
+      try {
+        const nextPage = token
+          ? await getReportRows(token, report.id, rowsPageNumber, 25)
+          : await getSharedReportRows(shareToken ?? report.share_token, rowsPageNumber, 25);
+        if (!isCancelled) {
+          setRowsPage(nextPage);
+        }
+      } catch (error) {
+        if (!isCancelled) {
+          setRowsError(error instanceof Error ? error.message : "Could not load table rows.");
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsRowsLoading(false);
+        }
+      }
+    }
+
+    void loadRows();
+    return () => {
+      isCancelled = true;
+    };
+  }, [report.id, report.share_token, rowsPageNumber, shareToken, showExplorer, token]);
 
   async function handleCopyShareLink() {
     setActionError("");
@@ -90,58 +137,78 @@ export function AnalysisDashboard({
     }
   }
 
+  async function handleLoadCharts() {
+    if (isChartsLoading) {
+      return;
+    }
+
+    setIsChartsLoading(true);
+    setChartsError("");
+    try {
+      const response = token
+        ? await getReportSection<ChartSpec[]>(token, report.id, "charts")
+        : await getSharedReportSection<ChartSpec[]>(shareToken ?? report.share_token, "charts");
+      setCharts(response.data);
+    } catch (error) {
+      setChartsError(error instanceof Error ? error.message : "Could not load charts.");
+    } finally {
+      setIsChartsLoading(false);
+    }
+  }
+
   return (
     <div className="analysis-dashboard stack stack--xl">
       {actionError ? <div className="notice notice--error">{actionError}</div> : null}
 
+      {(payload.metadata.is_preview || isProcessing) && (
+        <div className="notice notice--info">
+          {report.progress_message ?? "Quick preview analytics are ready."} Full analytics continue in the background,
+          so some metrics and tables may still refresh as processing finishes.
+        </div>
+      )}
+
+      {payload.metadata.optimized_mode ? (
+        <div className="notice notice--warning">
+          Large dataset detected. Processing in background with optimized mode.
+          {report.job_id ? ` Job ID: ${report.job_id}.` : ""}
+        </div>
+      ) : null}
+
+      {report.error_message ? <div className="notice notice--error">{report.error_message}</div> : null}
+
       <section className="analytics-hero">
         <article className="panel analytics-hero__panel">
           <div className="analytics-hero__topline">
-            <div className="section-eyebrow">Executive analytics board</div>
-            <span className="pill">{formatLabel(modeling.status)}</span>
+            <div className="section-eyebrow">Large dataset report</div>
+            <span className="pill">{formatStatus(report.status)}</span>
           </div>
 
           <h1 className="page-title analytics-title">{report.dataset_name}</h1>
           <p className="muted-copy analytics-hero__copy">
             Generated on {formatDate(report.created_at)} from a {report.source_type} workflow.
-            {report.target_column
-              ? ` Target column: ${report.target_column}.`
-              : " No target selected, so the app explored cluster-ready patterns."}
+            {report.target_column ? ` Target column: ${report.target_column}.` : " Exploratory mode is active."}
           </p>
 
           <div className="analytics-badge-row">
-            <span className="analytics-badge">{formatLabel(report.source_type)} source</span>
+            <span className="analytics-badge">{formatStatus(payload.metadata.processing_mode)}</span>
+            <span className="analytics-badge">{formatStatus(payload.metadata.file_type ?? report.source_type)}</span>
+            <span className="analytics-badge">{formatBytes(payload.metadata.file_size_bytes)}</span>
             <span className="analytics-badge">
-              {report.target_column ? `Target: ${report.target_column}` : "Exploratory analytics"}
+              {payload.metadata.is_preview ? "Preview analytics" : "Full analytics"}
             </span>
-            <span className="analytics-badge">{selectedModelLabel}</span>
-            {isPublic ? (
-              <span className="analytics-badge analytics-badge--secondary">Shared view</span>
-            ) : null}
           </div>
 
-          <div className="analytics-story-grid">
-            <article className="analytics-story-card">
-              <span>Top narrative</span>
-              <strong>{highlightedInsights[0] ?? "Automated analytics summary is ready for review."}</strong>
-            </article>
-            <article className="analytics-story-card">
-              <span>Relationship spotlight</span>
-              <strong>
-                {strongestCorrelation
-                  ? `${strongestCorrelation.left_column} and ${strongestCorrelation.right_column} move together.`
-                  : "Add at least two numeric columns to unlock relationship scoring."}
-              </strong>
-            </article>
-            <article className="analytics-story-card">
-              <span>Model direction</span>
-              <strong>
-                {modeling.status === "completed"
-                  ? `${selectedModelLabel} is the current recommended ML path.`
-                  : modeling.reason ?? "Model guidance is limited for this run."}
-              </strong>
-            </article>
-          </div>
+          {isProcessing ? (
+            <div className="progress-card">
+              <div className="progress-card__meta">
+                <span>{report.progress_message ?? "Processing analytics..."}</span>
+                <strong>{report.progress}%</strong>
+              </div>
+              <div className="progress-track">
+                <span className="progress-fill" style={{ width: `${report.progress}%` }} />
+              </div>
+            </div>
+          ) : null}
 
           <div className="button-row">
             <button type="button" className="button button--primary" onClick={handleCopyShareLink}>
@@ -155,8 +222,8 @@ export function AnalysisDashboard({
           </div>
         </article>
 
-        <aside className="analytics-kpi-rail">
-          {executiveMetrics.map((metric) => (
+        <aside className="analytics-kpi-rail analytics-kpi-rail--compact">
+          {topMetrics.map((metric) => (
             <article className={`metric-tile metric-tile--${metric.tone}`} key={metric.label}>
               <span className="metric-tile__label">{metric.label}</span>
               <strong className="metric-tile__value">{metric.value}</strong>
@@ -166,7 +233,7 @@ export function AnalysisDashboard({
         </aside>
       </section>
 
-      <section className="analytics-summary-grid">
+      <section className="analytics-summary-grid analytics-summary-grid--two">
         <article className="panel">
           <div className="panel__header">
             <div>
@@ -175,43 +242,15 @@ export function AnalysisDashboard({
             </div>
           </div>
           <div className="highlight-grid">
-            {highlightedInsights.length ? (
-              highlightedInsights.map((insight) => (
+            {payload.insights.length ? (
+              payload.insights.slice(0, 6).map((insight) => (
                 <div className="analytics-note-card" key={insight}>
                   {insight}
                 </div>
               ))
             ) : (
-              <div className="analytics-note-card">
-                The analytics engine did not generate narrative highlights for this run, but the charts and summary
-                tables are still available below.
-              </div>
+              <div className="analytics-note-card">The analytics engine did not generate narrative highlights yet.</div>
             )}
-          </div>
-        </article>
-
-        <article className="panel">
-          <div className="panel__header">
-            <div>
-              <div className="section-eyebrow">Data health</div>
-              <h2>Cleaning and retention score</h2>
-            </div>
-          </div>
-          <div className="health-stack">
-            {healthMetrics.map((item) => (
-              <div className="health-row" key={item.label}>
-                <div className="health-row__meta">
-                  <span>{item.label}</span>
-                  <strong>{item.value}</strong>
-                </div>
-                <div className="health-row__track">
-                  <span
-                    className={`health-row__fill health-row__fill--${item.tone}`}
-                    style={{ width: `${item.percentage}%` }}
-                  />
-                </div>
-              </div>
-            ))}
           </div>
         </article>
 
@@ -222,9 +261,9 @@ export function AnalysisDashboard({
               <h2>Suggested next moves</h2>
             </div>
           </div>
-          {recommendedActions.length ? (
+          {payload.recommendations.length ? (
             <ul className="bullet-list">
-              {recommendedActions.map((recommendation) => (
+              {payload.recommendations.map((recommendation) => (
                 <li key={recommendation}>{recommendation}</li>
               ))}
             </ul>
@@ -234,99 +273,75 @@ export function AnalysisDashboard({
         </article>
       </section>
 
-      <section className="panel panel--chart-stage">
-        <div className="panel__header">
-          <div>
-            <div className="section-eyebrow">Visual board</div>
-            <h2>Auto-generated analytics visuals</h2>
-          </div>
-          <span className="pill">{payload.charts.length} visuals</span>
-        </div>
-        <div className="chart-grid chart-grid--analytics">
-          {payload.charts.map((chart) => (
-            <ChartRenderer chart={chart} key={chart.id} />
-          ))}
-        </div>
-      </section>
-
       <section className="analytics-detail-grid">
         <article className="panel">
           <div className="panel__header">
             <div>
-              <div className="section-eyebrow">Model center</div>
-              <h2>Suggested ML strategy</h2>
+              <div className="section-eyebrow">Statistics</div>
+              <h2>Column summary table</h2>
             </div>
-            <span className="pill">{formatLabel(modeling.status)}</span>
+            <span className="pill">{payload.summary_statistics.length} columns</span>
           </div>
-
-          {modeling.status === "completed" ? (
-            <div className="stack">
-              <div className="model-hero">
-                <div className="model-hero__copy">
-                  <span className="model-hero__label">Recommended model</span>
-                  <strong>{selectedModelLabel}</strong>
-                  <p className="muted-copy">
-                    {modeling.notes ?? "The analytics engine picked a practical baseline model for this dataset."}
-                  </p>
-                </div>
-                <div className="model-metric-grid">
-                  {Object.entries(metrics).map(([metric, value]) => (
-                    <article className="model-metric-card" key={metric}>
-                      <span>{formatLabel(metric)}</span>
-                      <strong>{formatMetric(value)}</strong>
-                    </article>
-                  ))}
-                </div>
-              </div>
-
-              <div className="model-suggestion-grid">
-                {modeling.suggestions.map((suggestion, index) => (
-                  <article className="model-suggestion-card" key={suggestion.name}>
-                    <span>Option {index + 1}</span>
-                    <strong>{suggestion.name}</strong>
-                    <p>{suggestion.rationale}</p>
-                  </article>
+          <div className="table-shell">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Column</th>
+                  <th>Type</th>
+                  <th>Unique</th>
+                  <th>Mean / Top value</th>
+                  <th>Range</th>
+                </tr>
+              </thead>
+              <tbody>
+                {payload.summary_statistics.map((stat) => (
+                  <tr key={stat.column}>
+                    <td>{stat.column}</td>
+                    <td>{stat.dtype}</td>
+                    <td>{stat.unique_values}</td>
+                    <td>{stat.mean !== undefined ? formatMetric(stat.mean) : stat.top_value ?? "-"}</td>
+                    <td>
+                      {stat.min !== undefined || stat.max !== undefined
+                        ? `${formatMetric(stat.min ?? null)} to ${formatMetric(stat.max ?? null)}`
+                        : "-"}
+                    </td>
+                  </tr>
                 ))}
-              </div>
-
-              {rankingRows.length ? (
-                <div className="rank-list">
-                  {rankingRows.map((item) => (
-                    <div className="rank-row" key={item.label}>
-                      <div className="rank-row__copy">
-                        <span>{item.label}</span>
-                        <strong>{item.value}</strong>
-                      </div>
-                      <div className="rank-row__track">
-                        <span className="rank-row__fill" style={{ width: `${item.width}%` }} />
-                      </div>
-                      <small>{item.caption}</small>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <p className="muted-copy">{modeling.reason ?? "Modeling recommendations are not available for this run."}</p>
-          )}
+              </tbody>
+            </table>
+          </div>
         </article>
 
         <article className="panel">
           <div className="panel__header">
             <div>
               <div className="section-eyebrow">Signals</div>
-              <h2>Relationships, outliers, and trends</h2>
+              <h2>Correlations, outliers, and trends</h2>
             </div>
           </div>
 
           <div className="signal-card-grid">
-            {signalCards.map((signal) => (
-              <article className="signal-card" key={signal.label}>
-                <span>{signal.label}</span>
-                <strong>{signal.value}</strong>
-                <p>{signal.note}</p>
-              </article>
-            ))}
+            <article className="signal-card">
+              <span>Strongest correlation</span>
+              <strong>
+                {strongestCorrelation ? strongestCorrelation.correlation.toFixed(2) : "N/A"}
+              </strong>
+              <p>
+                {strongestCorrelation
+                  ? `${strongestCorrelation.left_column} x ${strongestCorrelation.right_column}`
+                  : "Need at least two numeric columns."}
+              </p>
+            </article>
+            <article className="signal-card">
+              <span>Outlier columns</span>
+              <strong>{payload.outliers.length}</strong>
+              <p>{payload.outliers[0]?.column ?? "No strong outliers flagged."}</p>
+            </article>
+            <article className="signal-card">
+              <span>Trend stories</span>
+              <strong>{payload.trends.length}</strong>
+              <p>{payload.trends[0]?.description ?? "No trend narrative was generated yet."}</p>
+            </article>
           </div>
 
           {payload.correlations.available ? (
@@ -340,7 +355,7 @@ export function AnalysisDashboard({
                   </tr>
                 </thead>
                 <tbody>
-                  {payload.correlations.strongest_pairs.slice(0, 5).map((pair) => (
+                  {payload.correlations.strongest_pairs.map((pair) => (
                     <tr key={`${pair.left_column}-${pair.right_column}`}>
                       <td>{pair.left_column}</td>
                       <td>{pair.right_column}</td>
@@ -353,34 +368,146 @@ export function AnalysisDashboard({
           ) : (
             <p className="muted-copy">Add at least two numeric columns to unlock correlation analysis.</p>
           )}
-
-          <div className="analytics-signal-stack">
-            {payload.outliers.length ? (
-              <div className="highlight-grid">
-                {payload.outliers.slice(0, 4).map((outlier) => (
-                  <div className="analytics-note-card" key={outlier.column}>
-                    {outlier.column}: {outlier.count} outliers ({outlier.percentage}%)
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="muted-copy">No significant outliers were detected by the IQR method.</p>
-            )}
-
-            <ul className="bullet-list">
-              {payload.trends.slice(0, 5).map((trend) => (
-                <li key={trend.column}>{trend.description}</li>
-              ))}
-            </ul>
-          </div>
         </article>
+      </section>
+
+      <section className="panel panel--chart-stage">
+        <div className="panel__header">
+          <div>
+            <div className="section-eyebrow">Visual board</div>
+            <h2>Lazy-loaded analytics charts</h2>
+          </div>
+          <div className="button-row">
+            <button
+              type="button"
+              className="button button--secondary"
+              onClick={handleLoadCharts}
+              disabled={isChartsLoading || (!canLoadCharts && isProcessing)}
+            >
+              {isChartsLoading ? "Loading charts..." : charts.length ? "Refresh charts" : "Load charts"}
+            </button>
+            <span className="pill">{charts.length} visuals</span>
+          </div>
+        </div>
+
+        {chartsError ? <div className="notice notice--error">{chartsError}</div> : null}
+
+        {charts.length ? (
+          <div className="chart-grid chart-grid--analytics">
+            {charts.map((chart) => (
+              <ChartRenderer chart={chart} key={chart.id} />
+            ))}
+          </div>
+        ) : (
+          <div className="lazy-shell">
+            <p className="muted-copy">
+              Charts are generated only when requested so very large reports stay fast and stable.
+            </p>
+            {!canLoadCharts && isProcessing ? (
+              <p className="muted-copy">The preview is still indexing data for chart generation.</p>
+            ) : null}
+          </div>
+        )}
       </section>
 
       <section className="panel">
         <div className="panel__header">
           <div>
-            <div className="section-eyebrow">Dataset preview</div>
-            <h2>First records after cleaning</h2>
+            <div className="section-eyebrow">Data explorer</div>
+            <h2>Paginated backend rows</h2>
+          </div>
+          <button
+            type="button"
+            className="button button--secondary"
+            onClick={() => setShowExplorer((current) => !current)}
+          >
+            {showExplorer ? "Hide table" : "Open table"}
+          </button>
+        </div>
+
+        {showExplorer ? (
+          <div className="stack">
+            {rowsError ? <div className="notice notice--error">{rowsError}</div> : null}
+            {rowsPage?.is_preview ? (
+              <div className="notice notice--warning">
+                The backend is still indexing the full file, so this table currently shows preview rows.
+              </div>
+            ) : null}
+            {isRowsLoading ? (
+              <p className="muted-copy">Loading table page...</p>
+            ) : null}
+            {rowsPage ? (
+              <>
+                <div className="table-shell">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        {rowsPage.columns.map((column) => (
+                          <th key={column}>{column}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rowsPage.rows.map((row, index) => (
+                        <tr key={`row-${rowsPage.page}-${index}`}>
+                          {rowsPage.columns.map((column) => (
+                            <td key={`${index}-${column}`}>{String(row[column] ?? "-")}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="pagination-bar">
+                  <span>
+                    Page {rowsPage.page} of {rowsPage.total_pages}
+                  </span>
+                  <span>{rowsPage.total_rows.toLocaleString()} total rows</span>
+                  <div className="button-row">
+                    <button
+                      type="button"
+                      className="button button--ghost"
+                      disabled={rowsPage.page <= 1 || isRowsLoading}
+                      onClick={() => setRowsPageNumber((current) => Math.max(current - 1, 1))}
+                    >
+                      Previous
+                    </button>
+                    <button
+                      type="button"
+                      className="button button--ghost"
+                      disabled={rowsPage.page >= rowsPage.total_pages || isRowsLoading}
+                      onClick={() => setRowsPageNumber((current) => current + 1)}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : null}
+          </div>
+        ) : (
+          <p className="muted-copy">
+            Large datasets stay out of browser memory. Open the table only when you need a paginated slice.
+          </p>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel__header">
+          <div>
+            <div className="section-eyebrow">Model center</div>
+            <h2>Suggested ML strategy</h2>
+          </div>
+          <span className="pill">{formatStatus(modeling.status)}</span>
+        </div>
+        <ModelSummary modeling={modeling} />
+      </section>
+
+      <section className="panel">
+        <div className="panel__header">
+          <div>
+            <div className="section-eyebrow">Preview</div>
+            <h2>Sample rows from the cleaned dataset</h2>
           </div>
         </div>
         <div className="table-shell">
@@ -404,217 +531,40 @@ export function AnalysisDashboard({
           </table>
         </div>
       </section>
-
-      <section className="panel">
-        <div className="panel__header">
-          <div>
-            <div className="section-eyebrow">Statistics</div>
-            <h2>Column summary table</h2>
-          </div>
-        </div>
-        <div className="table-shell">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Column</th>
-                <th>Type</th>
-                <th>Unique values</th>
-                <th>Mean / Top value</th>
-                <th>Range</th>
-              </tr>
-            </thead>
-            <tbody>
-              {payload.summary_statistics.map((stat) => (
-                <tr key={stat.column}>
-                  <td>{stat.column}</td>
-                  <td>{stat.dtype}</td>
-                  <td>{stat.unique_values}</td>
-                  <td>{stat.mean !== undefined ? formatMetric(stat.mean) : stat.top_value ?? "-"}</td>
-                  <td>
-                    {stat.min !== undefined || stat.max !== undefined
-                      ? `${formatMetric(stat.min ?? null)} to ${formatMetric(stat.max ?? null)}`
-                      : "-"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
     </div>
   );
 }
 
-function buildExecutiveMetrics(
-  payload: ReportPayload,
-  modeling: ModelingSummary,
-  strongestCorrelation: ReportPayload["correlations"]["strongest_pairs"][number] | null,
-  primaryMetric: { label: string; value: string; note: string } | null
-): ExecutiveMetric[] {
-  return [
-    {
-      label: "Rows analyzed",
-      value: formatCompactValue(payload.overview.row_count),
-      note: `${payload.overview.original_row_count} original records`,
-      tone: "plum"
-    },
-    {
-      label: "Columns profiled",
-      value: formatCompactValue(payload.overview.column_count),
-      note: `${payload.charts.length} dashboard visuals ready`,
-      tone: "gold"
-    },
-    {
-      label: "Missing values fixed",
-      value: formatCompactValue(
-        payload.cleaning.missing_values_before - payload.cleaning.missing_values_after
-      ),
-      note: `${formatPercent(
-        payload.cleaning.missing_values_before === 0
-          ? 1
-          : (payload.cleaning.missing_values_before - payload.cleaning.missing_values_after) /
-              payload.cleaning.missing_values_before
-      )} resolution rate`,
-      tone: "sky"
-    },
-    {
-      label: "Duplicates removed",
-      value: formatCompactValue(payload.cleaning.duplicate_rows_removed),
-      note: `${payload.cleaning.empty_rows_dropped} empty rows dropped`,
-      tone: "mint"
-    },
-    {
-      label: "Strongest correlation",
-      value: strongestCorrelation ? formatSignedValue(strongestCorrelation.correlation) : "N/A",
-      note: strongestCorrelation
-        ? `${strongestCorrelation.left_column} x ${strongestCorrelation.right_column}`
-        : "Need two numeric columns",
-      tone: "plum"
-    },
-    {
-      label: primaryMetric?.label ?? "Model status",
-      value: primaryMetric?.value ?? formatLabel(modeling.status),
-      note: primaryMetric?.note ?? `Mode: ${formatLabel(modeling.mode)}`,
-      tone: "gold"
-    }
-  ];
-}
+function ModelSummary({ modeling }: { modeling: ModelingSummary }) {
+  const metrics = modeling.metrics ?? {};
 
-function buildHealthMetrics(payload: ReportPayload): HealthMetric[] {
-  const rowRetention = safeRatio(
-    payload.cleaning.cleaned_shape.rows,
-    payload.cleaning.original_shape.rows
+  if (modeling.status !== "completed") {
+    return (
+      <p className="muted-copy">{modeling.reason ?? "Modeling recommendations are not available for this run."}</p>
+    );
+  }
+
+  return (
+    <div className="stack">
+      <div className="model-metric-grid">
+        {Object.entries(metrics).map(([metric, value]) => (
+          <article className="model-metric-card" key={metric}>
+            <span>{formatLabel(metric)}</span>
+            <strong>{formatMetric(value)}</strong>
+          </article>
+        ))}
+      </div>
+      <div className="model-suggestion-grid">
+        {modeling.suggestions.map((suggestion) => (
+          <article className="model-suggestion-card" key={suggestion.name}>
+            <span>Suggested path</span>
+            <strong>{suggestion.name}</strong>
+            <p>{suggestion.rationale}</p>
+          </article>
+        ))}
+      </div>
+    </div>
   );
-  const columnRetention = safeRatio(
-    payload.cleaning.cleaned_shape.columns,
-    payload.cleaning.original_shape.columns
-  );
-  const missingResolution = payload.cleaning.missing_values_before
-    ? safeRatio(
-        payload.cleaning.missing_values_before - payload.cleaning.missing_values_after,
-        payload.cleaning.missing_values_before
-      )
-    : 1;
-  const duplicateCleanup = payload.cleaning.original_shape.rows
-    ? safeRatio(payload.cleaning.duplicate_rows_removed, payload.cleaning.original_shape.rows)
-    : 0;
-
-  return [
-    {
-      label: "Row retention",
-      value: formatPercent(rowRetention),
-      percentage: clampPercentage(rowRetention * 100),
-      tone: "plum"
-    },
-    {
-      label: "Column retention",
-      value: formatPercent(columnRetention),
-      percentage: clampPercentage(columnRetention * 100),
-      tone: "gold"
-    },
-    {
-      label: "Missing resolution",
-      value: formatPercent(missingResolution),
-      percentage: clampPercentage(missingResolution * 100),
-      tone: "sky"
-    },
-    {
-      label: "Duplicate cleanup",
-      value: formatPercent(duplicateCleanup),
-      percentage: clampPercentage(duplicateCleanup * 100),
-      tone: "mint"
-    }
-  ];
-}
-
-function buildRankingRows(modeling: ModelingSummary): RankingRow[] {
-  if (modeling.feature_importance?.length) {
-    const maxImportance = Math.max(...modeling.feature_importance.map((item) => item.importance), 0.0001);
-    return modeling.feature_importance.map((item) => ({
-      label: item.feature,
-      value: formatMetric(item.importance),
-      caption: "Relative feature impact",
-      width: clampPercentage((item.importance / maxImportance) * 100)
-    }));
-  }
-
-  if (modeling.class_distribution) {
-    const entries = Object.entries(modeling.class_distribution)
-      .sort((left, right) => right[1] - left[1])
-      .slice(0, 6);
-    const maxCount = Math.max(...entries.map(([, value]) => value), 1);
-    return entries.map(([label, value]) => ({
-      label,
-      value: formatCompactValue(value),
-      caption: "Records in class",
-      width: clampPercentage((value / maxCount) * 100)
-    }));
-  }
-
-  if (modeling.cluster_summary) {
-    const entries = Object.entries(modeling.cluster_summary)
-      .sort((left, right) => right[1] - left[1])
-      .slice(0, 6);
-    const maxCount = Math.max(...entries.map(([, value]) => value), 1);
-    return entries.map(([label, value]) => ({
-      label: `Cluster ${label}`,
-      value: formatCompactValue(value),
-      caption: "Members in segment",
-      width: clampPercentage((value / maxCount) * 100)
-    }));
-  }
-
-  return [];
-}
-
-function buildSignalCards(
-  payload: ReportPayload,
-  strongestCorrelation: ReportPayload["correlations"]["strongest_pairs"][number] | null
-): ExecutiveMetric[] {
-  return [
-    {
-      label: "Correlation spotlight",
-      value: strongestCorrelation ? formatSignedValue(strongestCorrelation.correlation) : "N/A",
-      note: strongestCorrelation
-        ? `${strongestCorrelation.left_column} x ${strongestCorrelation.right_column}`
-        : "Numeric pair analysis unavailable",
-      tone: "plum"
-    },
-    {
-      label: "Outlier columns",
-      value: formatCompactValue(payload.outliers.length),
-      note: payload.outliers.length
-        ? `${payload.outliers[0].column} is the most flagged column`
-        : "No strong outlier columns",
-      tone: "gold"
-    },
-    {
-      label: "Trend narratives",
-      value: formatCompactValue(payload.trends.length),
-      note: payload.trends[0]?.description ?? "Add a time or sequence signal for stronger trend analysis.",
-      tone: "sky"
-    }
-  ];
 }
 
 function getStrongestCorrelation(
@@ -629,54 +579,37 @@ function getStrongestCorrelation(
   );
 }
 
-function getPrimaryMetric(
-  modeling: ModelingSummary
-): { label: string; value: string; note: string } | null {
-  const metrics = modeling.metrics ?? {};
-  const prioritiesByMode: Record<string, string[]> = {
-    regression: ["r2", "rmse", "mae"],
-    classification: ["accuracy", "f1_score", "precision", "recall"],
-    clustering: ["silhouette_score"]
-  };
-
-  const priorities = prioritiesByMode[modeling.mode] ?? Object.keys(metrics);
-  const selectedMetric = priorities.find((metric) => metric in metrics);
-  if (!selectedMetric) {
-    return null;
-  }
-
-  return {
-    label: formatLabel(selectedMetric),
-    value: formatMetric(metrics[selectedMetric]),
-    note: `Primary score for ${formatLabel(modeling.mode)} mode`
-  };
-}
-
-function formatCompactValue(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    notation: "compact",
-    maximumFractionDigits: value >= 100 ? 0 : 1
-  }).format(value);
-}
-
-function formatPercent(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "percent",
-    maximumFractionDigits: 0
-  }).format(value);
-}
-
-function formatSignedValue(value: number): string {
-  return `${value > 0 ? "+" : ""}${value.toFixed(2)}`;
-}
-
-function safeRatio(numerator: number, denominator: number): number {
-  if (!denominator) {
-    return 0;
-  }
-  return numerator / denominator;
-}
-
-function clampPercentage(value: number): number {
-  return Math.max(0, Math.min(100, value));
+function buildTopMetrics(
+  payload: ReportPayload,
+  report: ReportDetail,
+  strongestCorrelation: ReportPayload["correlations"]["strongest_pairs"][number] | null
+) {
+  return [
+    {
+      label: "Rows",
+      value: report.row_count.toLocaleString(),
+      note: `${report.column_count.toLocaleString()} columns profiled`,
+      tone: "plum" as const
+    },
+    {
+      label: "Missing values",
+      value: payload.cleaning.missing_values_before.toLocaleString(),
+      note: "Across the current analytics profile",
+      tone: "gold" as const
+    },
+    {
+      label: "Strongest pair",
+      value: strongestCorrelation ? strongestCorrelation.correlation.toFixed(2) : "N/A",
+      note: strongestCorrelation
+        ? `${strongestCorrelation.left_column} x ${strongestCorrelation.right_column}`
+        : "Need two numeric columns",
+      tone: "sky" as const
+    },
+    {
+      label: "Progress",
+      value: `${report.progress}%`,
+      note: report.progress_message ?? "Analytics state",
+      tone: "mint" as const
+    }
+  ];
 }

@@ -21,6 +21,26 @@ export function formatMetric(value: number | string | null | undefined): string 
   return value;
 }
 
+export function formatBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined || value < 0) {
+    return "N/A";
+  }
+
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+export function formatStatus(value: string): string {
+  return formatLabel(value);
+}
+
 export async function copyToClipboard(value: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(value);

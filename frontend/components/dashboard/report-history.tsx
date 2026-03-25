@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 
 import type { HistoryItem } from "@/lib/types";
-import { buildShareUrl, copyToClipboard, formatDate } from "@/lib/utils";
+import { buildShareUrl, copyToClipboard, formatBytes, formatDate, formatStatus } from "@/lib/utils";
 
 type ReportHistoryProps = {
   items: HistoryItem[];
@@ -31,27 +31,61 @@ export function ReportHistory({ items }: ReportHistoryProps) {
 
       {items.length ? (
         <div className="history-list">
-          {items.map((item) => (
-            <article className="history-card" key={item.id}>
-              <div className="history-card__meta">
-                <span className="pill">{item.source_type}</span>
-                <span>{formatDate(item.created_at)}</span>
-              </div>
-              <h3>{item.dataset_name}</h3>
-              <p>
-                {item.row_count} rows, {item.column_count} columns
-                {item.target_column ? `, target: ${item.target_column}` : ", clustering-ready"}
-              </p>
-              <div className="button-row">
-                <Link href={`/analysis/${item.id}`} className="button button--secondary">
-                  Open report
-                </Link>
-                <button type="button" className="button button--ghost" onClick={() => handleCopy(item)}>
-                  {copiedReportId === item.id ? "Copied" : "Copy share link"}
-                </button>
-              </div>
-            </article>
-          ))}
+          {items.map((item) => {
+            const isActive = !["completed", "failed"].includes(item.status);
+            return (
+              <article className="history-card" key={item.id}>
+                <div className="history-card__meta">
+                  <span className="pill">{formatStatus(item.status)}</span>
+                  <span>{formatDate(item.created_at)}</span>
+                </div>
+
+                <div className="history-card__title-row">
+                  <h3>{item.dataset_name}</h3>
+                  {item.processing_mode ? <small>{formatStatus(item.processing_mode)}</small> : null}
+                </div>
+
+                <p>
+                  {item.row_count.toLocaleString()} rows, {item.column_count.toLocaleString()} columns
+                  {item.target_column ? `, target: ${item.target_column}` : ", exploratory mode"}
+                </p>
+
+                {item.job_id ? <p className="muted-copy">Job ID: {item.job_id}</p> : null}
+
+                <div className="history-card__facts">
+                  <span>{item.file_type ? formatStatus(item.file_type) : "Manual"}</span>
+                  <span>{formatBytes(item.file_size_bytes)}</span>
+                </div>
+
+                {isActive ? (
+                  <div className="progress-card progress-card--compact">
+                    <div className="progress-card__meta">
+                      <span>{item.progress_message ?? "Processing analytics..."}</span>
+                      <strong>{item.progress}%</strong>
+                    </div>
+                    <div className="progress-track">
+                      <span className="progress-fill" style={{ width: `${item.progress}%` }} />
+                    </div>
+                  </div>
+                ) : null}
+
+                {item.processing_mode === "large" && isActive ? (
+                  <div className="notice notice--info">Large dataset detected. Processing in background.</div>
+                ) : null}
+
+                {item.error_message ? <div className="notice notice--error">{item.error_message}</div> : null}
+
+                <div className="button-row">
+                  <Link href={`/analysis/${item.id}`} className="button button--secondary">
+                    {isActive ? "Open live report" : "Open report"}
+                  </Link>
+                  <button type="button" className="button button--ghost" onClick={() => handleCopy(item)}>
+                    {copiedReportId === item.id ? "Copied" : "Copy share link"}
+                  </button>
+                </div>
+              </article>
+            );
+          })}
         </div>
       ) : (
         <div className="empty-state">

@@ -169,7 +169,14 @@ function Test-PythonModules {
         [string]$PythonPath
     )
 
-    $importCommand = "import " + ($ModuleNames -join ", ")
+    $moduleChecks = foreach ($moduleName in $ModuleNames) {
+        if ($moduleName -eq "uvicorn") {
+            "import uvicorn; assert hasattr(uvicorn, 'run')"
+        } else {
+            "import $moduleName"
+        }
+    }
+    $importCommand = $moduleChecks -join "; "
     $originalPythonPath = $env:PYTHONPATH
 
     try {
