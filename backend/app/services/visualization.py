@@ -230,8 +230,6 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
         )
 
     return charts
-
-
 def build_chart_payload(
     chart_id: str,
     chart_type: str,
@@ -246,8 +244,6 @@ def build_chart_payload(
         "description": description,
         "figure": json.loads(figure.to_json()),
     }
-
-
 def style_figure(figure) -> None:
     figure.update_layout(
         template="plotly_white",
