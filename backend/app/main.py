@@ -2,6 +2,10 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from fastapi import Request
 from app.api.routes.analysis import router as analysis_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.health import router as health_router
@@ -10,6 +14,11 @@ from app.db.session import init_db
 from app.services.job_manager import job_manager
 from app.services.storage import ensure_storage_directories
 logger = logging.getLogger(__name__)
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
@@ -22,14 +31,18 @@ async def lifespan(_: FastAPI):
             "Celery workers are enabled without S3-compatible storage. Configure STORAGE_BACKEND=s3 and S3_* env vars for distributed uploads."
         )
     logger.info(
-        "API startup complete: env=%s storage_root=%s storage_backend=%s background_backend=%s report_base_url=%s resumed_jobs=%s",
+        "API startup complete: env=%s storage_root=%s storage_backend=%s background_backend=%s report_base_url=%s resumed_jobs=%s workers=%s stale_min=%s",
         settings.app_env,
         settings.resolved_storage_root,
         settings.storage_backend,
         settings.background_job_backend,
         settings.report_base_url,
         resumed_jobs,
+        settings.background_worker_count,
+        settings.job_stale_after_minutes,
     )
+    if resumed_jobs == 0:
+        logger.info("No pending jobs found at startup. Background processing ready.")
     yield
     job_manager.shutdown()
     logger.info("API shutdown complete.")
@@ -38,6 +51,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
     description="Production-ready analytics API for Auto Analytics AI.",
+    request_timeout=120,
 )
 app.add_middleware(
     CORSMiddleware,

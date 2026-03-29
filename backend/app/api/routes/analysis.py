@@ -47,6 +47,11 @@ from app.services.processing import (
     get_report_rows_page,
     materialize_report_payload,
 )
+from app.services.processing import is_job_stale
+from app.db.session import SessionLocal
+from fastapi import HTTPException
+import logging
+from datetime import datetime, timezone
 from app.services.reporting import build_pdf_report
 from app.services.storage import (
     abort_multipart_storage_upload,
@@ -386,6 +391,18 @@ def get_job_status(
         .options(selectinload(AnalysisReport.cache_link).selectinload(AnalysisReportCacheLink.cache_entry))
         .order_by(desc(AnalysisReport.created_at))
     )
+    if not report or not report.cache_link:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    cache_entry = report.cache_link.cache_entry
+    if cache_entry.status == "processing" and is_job_stale(cache_entry):
+        raise HTTPException(
+            status_code=503,
+            detail="Analytics service temporarily busy processing large dataset. Retry in 30s.",
+            headers={"Retry-After": "30"}
+        )
+
+    result_payload = materialize_report_payload(report, cache_entry) if (cache_entry.preview_payload or cache_entry.full_payload) else None
     if not report or not report.cache_link:
         raise HTTPException(status_code=404, detail="Job not found.")
 

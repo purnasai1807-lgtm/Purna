@@ -338,8 +338,12 @@ def build_small_file_payload(
 
 def process_cache_entry(cache_entry_id: str) -> None:
     try:
+        logger.info(f"Processing cache entry {cache_entry_id} started")
         with SessionLocal() as db:
             cache_entry = db.get(AnalysisCacheEntry, cache_entry_id)
+            if settings.analytics_memory_limit_mb:
+                import resource
+                resource.setrlimit(resource.RLIMIT_AS, (settings.analytics_memory_limit_mb * 1024 * 1024, -1))
             if not cache_entry:
                 logger.warning("Cache entry not found for background job: cache_entry_id=%s", cache_entry_id)
                 return
@@ -382,6 +386,7 @@ def process_cache_entry(cache_entry_id: str) -> None:
 
             full_payload = build_full_payload(cache_entry)
             cache_entry.full_payload = full_payload
+            logger.info(f"Full payload built for {cache_entry_id}")
             cache_entry.row_count = int(full_payload.get("overview", {}).get("row_count", cache_entry.row_count))
             cache_entry.column_count = int(
                 full_payload.get("overview", {}).get("column_count", cache_entry.column_count)
@@ -400,6 +405,9 @@ def process_cache_entry(cache_entry_id: str) -> None:
                 cache_entry.row_count,
                 cache_entry.column_count,
             )
+    except MemoryError as mem_exc:
+        logger.error("MemoryError in processing %s: %s", cache_entry_id, mem_exc)
+        raise
     except Exception as exc:
         logger.exception("Background analytics failed: cache_entry_id=%s", cache_entry_id)
         with SessionLocal() as db:
@@ -408,11 +416,12 @@ def process_cache_entry(cache_entry_id: str) -> None:
                 return
             cache_entry.status = "failed"
             cache_entry.progress = 100
-            cache_entry.error_message = str(exc)
-            cache_entry.progress_message = "Analytics failed. Please try uploading the file again."
+            cache_entry.error_message = f"Processing error: {str(exc)[:200]}"
+            cache_entry.progress_message = "Analytics failed due to processing error. Try smaller sample."
             cache_entry.failed_at = utcnow()
             propagate_cache_state_to_reports(db, cache_entry)
             db.commit()
+        raise  # Re-raise for job_manager to catch
 
 
 def build_full_payload(cache_entry: AnalysisCacheEntry) -> dict[str, Any]:

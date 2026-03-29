@@ -28,19 +28,19 @@ class Settings(BaseSettings):
     analytics_sample_rows: int = 10000
     chart_sample_rows: int = 5000
     small_file_threshold_mb: int = 10
-    medium_file_threshold_mb: int = 50
+    medium_file_threshold_mb: int = 100
     small_excel_threshold_mb: int = 10
     medium_excel_threshold_mb: int = 50
     max_table_page_size: int = 100
     default_table_page_size: int = 25
-    background_worker_count: int = 2
-    excel_chunk_rows: int = 5000
+    background_worker_count: int = 4
+    excel_chunk_rows: int = 10000
     max_chart_count: int = 8
     background_job_backend: str = "threadpool"
     celery_broker_url: str | None = None
     celery_result_backend: str | None = None
     celery_queue_name: str = "analytics"
-    job_stale_after_minutes: int = 20
+    job_stale_after_minutes: int = 60
     storage_backend: str = "local"
     s3_bucket_name: str | None = None
     s3_region: str | None = None
@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     s3_use_ssl: bool = True
     upload_session_expiry_minutes: int = 1440
     upload_cleanup_interval_minutes: int = 30
+
+    analytics_memory_limit_mb: int = 4096
 
     model_config = SettingsConfigDict(
         env_file=".env",

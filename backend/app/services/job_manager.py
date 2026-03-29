@@ -12,8 +12,10 @@ from app.services.processing import (
     is_job_stale,
     process_cache_entry,
 )
+import traceback
 logger = logging.getLogger(__name__)
 class AnalyticsJobManager:
+    retry_count_attr = 'retry_count'  # Class attr for retry tracking
     def __init__(self) -> None:
         self._lock = Lock()
         self._executor = (
@@ -33,9 +35,13 @@ class AnalyticsJobManager:
                     cache_entry_id,
                 )
                 return None
+            def done_callback(fut):
+                self._clear(cache_entry_id)
+                if fut.exception():
+                    self._handle_job_failure(cache_entry_id, fut.exception())
             next_future = self._executor.submit(process_cache_entry, cache_entry_id)
             self._futures[cache_entry_id] = next_future
-            next_future.add_done_callback(lambda _: self._clear(cache_entry_id))
+            next_future.add_done_callback(done_callback)
             logger.info("Background job submitted: cache_entry_id=%s", cache_entry_id)
             return None
     def resume_pending(self) -> int:
@@ -73,6 +79,28 @@ class AnalyticsJobManager:
     def _clear(self, cache_entry_id: str) -> None:
         with self._lock:
             self._futures.pop(cache_entry_id, None)
+
+    def _handle_job_failure(self, cache_entry_id: str, exc: Exception) -> None:
+        logger.error("Background job failed: cache_entry_id=%s error=%s", cache_entry_id, exc, exc_info=True)
+        max_retries = 3
+        with SessionLocal() as db:
+            cache_entry = db.get(AnalysisCacheEntry, cache_entry_id)
+            if not cache_entry:
+                return
+            retry_count = getattr(cache_entry, 'retry_count', 0)
+            if retry_count < max_retries and 'memory' in str(exc).lower():
+                cache_entry.retry_count = retry_count + 1
+                cache_entry.status = 'preview_ready'
+                cache_entry.progress_message = f"Retry {retry_count + 1}/{max_retries} after memory issue."
+                db.commit()
+                logger.info("Job retry scheduled: cache_entry_id=%s retry=%s", cache_entry_id, retry_count + 1)
+                self.submit(cache_entry_id)
+            else:
+                cache_entry.status = 'failed'
+                cache_entry.error_message = f"Job failed after {retry_count} retries: {str(exc)}"
+                cache_entry.progress_message = "Processing failed. Please re-upload."
+                db.commit()
+                logger.error("Job permanently failed: cache_entry_id=%s", cache_entry_id)
     def _submit_celery(self, cache_entry_id: str) -> str | None:
         with SessionLocal() as db:
             cache_entry = db.get(AnalysisCacheEntry, cache_entry_id)
