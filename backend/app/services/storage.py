@@ -453,8 +453,7 @@ async def save_upload_to_storage(upload: UploadFile) -> StoredUpload:
                 if file_size_bytes > settings.max_upload_size_bytes:
                     delete_file_if_exists(destination)
                     raise ValueError(
-                        f"Upload exceeds the {settings.max_upload_size_mb} MB limit. "
-                        "Please upload a smaller file."
+f"File size {settings.max_upload_size_mb}MB+ detected (limit increased to 500MB). "\n                        "Try a sample or contact support for larger datasets."
                     )
                 digest.update(chunk)
                 output_stream.write(chunk)
@@ -468,9 +467,7 @@ async def save_upload_to_storage(upload: UploadFile) -> StoredUpload:
     finally:
         await upload.close()
 
-    if file_size_bytes == 0:
-        delete_file_if_exists(destination)
-        raise ValueError("The uploaded file is empty.")
+        if file_size_bytes == 0:\n            delete_file_if_exists(destination)\n            raise ValueError("File appears empty. Check CSV/Excel/JSON format has data rows.")
 
     return StoredUpload(
         original_filename=filename,
@@ -520,12 +517,9 @@ def create_stored_upload_from_existing_storage(
     content_hash, actual_size = compute_file_digest_and_size(materialized_path)
     resolved_size = int(file_size_bytes or actual_size)
 
-    if resolved_size <= 0:
-        raise ValueError("The uploaded file is empty.")
+    if resolved_size <= 0:\n        raise ValueError("Stored file empty after download. Verify upload complete.")
     if resolved_size > settings.max_upload_size_bytes:
-        raise ValueError(
-            f"Upload exceeds the {settings.max_upload_size_mb} MB limit. Please upload a smaller file."
-        )
+        raise ValueError(\n            f"Final size {settings.max_upload_size_mb}MB+ (limit 500MB). Use sample for larger."\n        )
 
     return StoredUpload(
         original_filename=original_filename,

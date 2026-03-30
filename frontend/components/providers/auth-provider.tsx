@@ -9,26 +9,53 @@ import {
   type PropsWithChildren
 } from "react";
 
-import { ApiError, getCurrentUser, login, signup } from "@/lib/api";
-import type { LoginPayload, SignupPayload, User } from "@/lib/types";
+import { ApiError, getCurrentUser, login, loginPublicUser as requestPublicLogin, signup } from "@/lib/api";
+import type { AuthMode, LoginPayload, SignupPayload, User } from "@/lib/types";
 
 type AuthContextValue = {
   user: User | null;
   token: string | null;
+  authMode: AuthMode | null;
   isLoading: boolean;
   loginUser: (payload: LoginPayload) => Promise<void>;
   signupUser: (payload: SignupPayload) => Promise<void>;
+  loginPublicUser: () => Promise<void>;
   logoutUser: () => void;
 };
 
 const STORAGE_KEY = "auto-analytics-ai-auth";
+const PUBLIC_AUTH_MODE: AuthMode = "public";
+const ACCOUNT_AUTH_MODE: AuthMode = "account";
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: PropsWithChildren) {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [authMode, setAuthMode] = useState<AuthMode | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  function clearAuthState() {
+    setToken(null);
+    setUser(null);
+    setAuthMode(null);
+    window.localStorage.removeItem(STORAGE_KEY);
+  }
+
+  function persistAuthState(nextToken: string, nextMode: AuthMode) {
+    setToken(nextToken);
+    setAuthMode(nextMode);
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ token: nextToken, mode: nextMode })
+    );
+  }
+
+  async function restorePublicUser() {
+    const response = await requestPublicLogin();
+    persistAuthState(response.access_token, PUBLIC_AUTH_MODE);
+    setUser(response.user);
+  }
 
   useEffect(() => {
     const rawState = window.localStorage.getItem(STORAGE_KEY);
@@ -38,63 +65,76 @@ export function AuthProvider({ children }: PropsWithChildren) {
     }
 
     try {
-      const parsed = JSON.parse(rawState) as { token: string };
+      const parsed = JSON.parse(rawState) as { token?: string; mode?: AuthMode };
+      const storedMode = parsed.mode === PUBLIC_AUTH_MODE ? PUBLIC_AUTH_MODE : ACCOUNT_AUTH_MODE;
       if (!parsed.token) {
+        if (storedMode === PUBLIC_AUTH_MODE) {
+          restorePublicUser()
+            .catch(() => {
+              clearAuthState();
+            })
+            .finally(() => setIsLoading(false));
+          return;
+        }
+
+        clearAuthState();
         setIsLoading(false);
         return;
       }
 
       setToken(parsed.token);
+      setAuthMode(storedMode);
 
       getCurrentUser(parsed.token)
         .then((currentUser) => {
           setUser(currentUser);
         })
-        .catch((error) => {
-          if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
-            setToken(null);
-            setUser(null);
-            window.localStorage.removeItem(STORAGE_KEY);
+        .catch(async (error) => {
+          if (!(error instanceof ApiError) || ![401, 403].includes(error.status ?? 0)) {
+            return;
           }
+
+          if (storedMode === PUBLIC_AUTH_MODE) {
+            try {
+              await restorePublicUser();
+            } catch {
+              clearAuthState();
+            }
+            return;
+          }
+
+          clearAuthState();
         })
         .finally(() => setIsLoading(false));
     } catch {
-      setToken(null);
-      setUser(null);
-      window.localStorage.removeItem(STORAGE_KEY);
+      clearAuthState();
       setIsLoading(false);
     }
   }, []);
 
   async function loginUser(payload: LoginPayload) {
     const response = await login(payload);
-    setToken(response.access_token);
     setUser(response.user);
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ token: response.access_token })
-    );
+    persistAuthState(response.access_token, ACCOUNT_AUTH_MODE);
   }
 
   async function signupUser(payload: SignupPayload) {
     const response = await signup(payload);
-    setToken(response.access_token);
     setUser(response.user);
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ token: response.access_token })
-    );
+    persistAuthState(response.access_token, ACCOUNT_AUTH_MODE);
+  }
+
+  async function loginPublicUser() {
+    await restorePublicUser();
   }
 
   function logoutUser() {
-    setToken(null);
-    setUser(null);
-    window.localStorage.removeItem(STORAGE_KEY);
+    clearAuthState();
   }
 
   const value = useMemo(
-    () => ({ user, token, isLoading, loginUser, signupUser, logoutUser }),
-    [user, token, isLoading]
+    () => ({ user, token, authMode, isLoading, loginUser, signupUser, loginPublicUser, logoutUser }),
+    [user, token, authMode, isLoading]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -4,11 +4,65 @@ $script:ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $script:RuntimeDir = Join-Path $script:ProjectRoot ".runtime"
 $script:BackendDir = Join-Path $script:ProjectRoot "backend"
 $script:FrontendDir = Join-Path $script:ProjectRoot "frontend"
+$script:RuntimeConfigFile = Join-Path $script:RuntimeDir "runtime-config.json"
 
 function Ensure-RuntimeDir {
     if (-not (Test-Path $script:RuntimeDir)) {
         New-Item -ItemType Directory -Path $script:RuntimeDir | Out-Null
     }
+}
+
+function Get-DefaultRuntimeConfig {
+    return @{
+        BackendHost = "127.0.0.1"
+        BackendPort = 8000
+        FrontendHost = "0.0.0.0"
+        FrontendPort = 3000
+    }
+}
+
+function Get-RuntimeConfig {
+    Ensure-RuntimeDir
+    $defaults = Get-DefaultRuntimeConfig
+
+    if (-not (Test-Path $script:RuntimeConfigFile)) {
+        return $defaults
+    }
+
+    try {
+        $rawConfig = Get-Content $script:RuntimeConfigFile -Raw | ConvertFrom-Json -AsHashtable
+        $backendHost = if ($rawConfig.ContainsKey("BackendHost") -and $rawConfig.BackendHost) { [string]$rawConfig.BackendHost } else { [string]$defaults.BackendHost }
+        $backendPort = if ($rawConfig.ContainsKey("BackendPort") -and $rawConfig.BackendPort) { [int]$rawConfig.BackendPort } else { [int]$defaults.BackendPort }
+        $frontendHost = if ($rawConfig.ContainsKey("FrontendHost") -and $rawConfig.FrontendHost) { [string]$rawConfig.FrontendHost } else { [string]$defaults.FrontendHost }
+        $frontendPort = if ($rawConfig.ContainsKey("FrontendPort") -and $rawConfig.FrontendPort) { [int]$rawConfig.FrontendPort } else { [int]$defaults.FrontendPort }
+        return @{
+            BackendHost = $backendHost
+            BackendPort = $backendPort
+            FrontendHost = $frontendHost
+            FrontendPort = $frontendPort
+        }
+    } catch {
+        return $defaults
+    }
+}
+
+function Set-RuntimeConfig {
+    param(
+        [string]$BackendHost = "127.0.0.1",
+        [int]$BackendPort = 8000,
+        [string]$FrontendHost = "0.0.0.0",
+        [int]$FrontendPort = 3000
+    )
+
+    Ensure-RuntimeDir
+    @{
+        BackendHost = $BackendHost
+        BackendPort = $BackendPort
+        FrontendHost = $FrontendHost
+        FrontendPort = $FrontendPort
+    } |
+        ConvertTo-Json |
+        Set-Content -Path $script:RuntimeConfigFile
 }
 
 function Get-ServiceDefinition {
@@ -18,6 +72,8 @@ function Get-ServiceDefinition {
         [string]$Name
     )
 
+    $runtimeConfig = Get-RuntimeConfig
+
     switch ($Name) {
         "backend" {
             return @{
@@ -25,7 +81,7 @@ function Get-ServiceDefinition {
                 PidFile = Join-Path $script:RuntimeDir "backend.pid"
                 LogFile = Join-Path $script:RuntimeDir "backend.log"
                 ErrorFile = Join-Path $script:RuntimeDir "backend.err"
-                Url = "http://127.0.0.1:8000/health"
+                Url = "http://127.0.0.1:$($runtimeConfig.BackendPort)/health"
             }
         }
         "frontend" {
@@ -34,7 +90,7 @@ function Get-ServiceDefinition {
                 PidFile = Join-Path $script:RuntimeDir "frontend.pid"
                 LogFile = Join-Path $script:RuntimeDir "frontend.log"
                 ErrorFile = Join-Path $script:RuntimeDir "frontend.err"
-                Url = "http://127.0.0.1:3000"
+                Url = "http://127.0.0.1:$($runtimeConfig.FrontendPort)"
             }
         }
     }

@@ -1,15 +1,12 @@
 from __future__ import annotations
-
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
 from uuid import uuid4
-
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, selectinload
-
 from app.api.deps import get_current_user
 from app.core.config import settings
 from app.db.models import (
@@ -136,14 +133,7 @@ def create_upload_session(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if request.file_size_bytes > settings.max_upload_size_bytes:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Upload exceeds the {settings.max_upload_size_mb} MB limit. "
-                "Please upload a smaller file."
-            ),
-        )
+    if request.file_size_bytes > settings.max_upload_size_bytes:\n        raise HTTPException(\n            status_code=413,\n            detail=(\n                f"Large file {settings.max_upload_size_mb}MB+ (limit 500MB). "\n                "Upload accepted - poll session status."\n            ),\n            headers={"Retry-After": "60"},\n        )
 
     resolved_dataset_name = request.dataset_name or Path(request.filename).stem or "Dataset"
     normalized_target = normalize_column_name(request.target_column) if request.target_column else None
@@ -571,15 +561,11 @@ def serialize_history_item(report: AnalysisReport) -> AnalysisHistoryItem:
         share_url=build_share_url(report.share_token),
         created_at=report.created_at,
     )
-
-
 def serialize_report(report: AnalysisReport) -> AnalysisReportRead:
     cache_entry = report.cache_link.cache_entry if report.cache_link else None
     payload = materialize_report_payload(report, cache_entry) if cache_entry else report.report_payload or {}
     history = serialize_history_item(report)
     return AnalysisReportRead(**history.model_dump(), report=payload)
-
-
 def create_or_attach_upload_report(
     *,
     db: Session,
@@ -768,8 +754,6 @@ def get_report_for_upload_session(
         .where(AnalysisReport.id == upload_session.report_id, AnalysisReport.user_id == user_id)
         .options(selectinload(AnalysisReport.cache_link).selectinload(AnalysisReportCacheLink.cache_entry))
     )
-
-
 def ensure_upload_session_not_expired(upload_session: AnalysisUploadSession, db: Session) -> None:
     if upload_session.report_id or not upload_session.expires_at:
         return
@@ -790,8 +774,6 @@ def ensure_upload_session_not_expired(upload_session: AnalysisUploadSession, db:
     )
     db.commit()
     raise HTTPException(status_code=410, detail=upload_session.error_message)
-
-
 def derive_upload_session_status(cache_status: str) -> str:
     if cache_status == "completed":
         return "completed"
@@ -800,8 +782,6 @@ def derive_upload_session_status(cache_status: str) -> str:
     if cache_status == "preview_ready":
         return "preview_ready"
     return "processing"
-
-
 def sync_upload_session_from_report(upload_session: AnalysisUploadSession, report: AnalysisReport) -> None:
     cache_entry = report.cache_link.cache_entry if report.cache_link else None
     upload_session.report_id = report.id
@@ -811,8 +791,6 @@ def sync_upload_session_from_report(upload_session: AnalysisUploadSession, repor
         upload_session.status = derive_upload_session_status(cache_entry.status)
     elif report.status == "completed":
         upload_session.status = "completed"
-
-
 def serialize_upload_session(
     upload_session: AnalysisUploadSession,
     report: AnalysisReport | None = None,
@@ -843,8 +821,6 @@ def serialize_upload_session(
         expires_at=upload_session.expires_at,
         report=serialize_report(report) if report else None,
     )
-
-
 def get_upload_session_progress(status: str) -> int:
     progress_map = {
         "created": 5,
@@ -858,8 +834,6 @@ def get_upload_session_progress(status: str) -> int:
         "expired": 100,
     }
     return progress_map.get(status, 0)
-
-
 def get_upload_session_message(status: str) -> str:
     message_map = {
         "created": "Preparing secure upload.",
@@ -873,7 +847,5 @@ def get_upload_session_message(status: str) -> str:
         "expired": "Upload session expired. Please upload the file again.",
     }
     return message_map.get(status, "Preparing secure upload.")
-
-
 def build_share_url(share_token: str) -> str:
     return f"{settings.report_base_url.rstrip('/')}/share/{share_token}"

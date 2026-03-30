@@ -56,8 +56,23 @@ export function AnalysisDashboard({
   const previewColumns = payload.overview.columns.map((item) => item.column);
   const strongestCorrelation = getStrongestCorrelation(payload);
   const isProcessing = !["completed", "failed"].includes(report.status);
+  const isExactAnalytics = report.status === "completed" && !payload.metadata.is_preview;
+  const chartsAreVerified = !isProcessing && (Boolean(payload.metadata.optimized_mode) || report.row_count <= 5000);
   const canLoadCharts = payload.sections.charts || charts.length > 0 || !isProcessing;
   const topMetrics = buildTopMetrics(payload, report, strongestCorrelation);
+  const accuracyCards = buildAccuracyCards({
+    payload,
+    report,
+    isProcessing,
+    isExactAnalytics,
+    chartsAreVerified
+  });
+  const chartStatusMessage = getChartStatusMessage({
+    chartsLoaded: charts.length > 0,
+    isProcessing,
+    isExactAnalytics,
+    chartsAreVerified
+  });
 
   useEffect(() => {
     setCharts(report.report.charts ?? []);
@@ -162,14 +177,22 @@ export function AnalysisDashboard({
 
       {(payload.metadata.is_preview || isProcessing) && (
         <div className="notice notice--info">
-          {report.progress_message ?? "Quick preview analytics are ready."} Full analytics continue in the background,
-          so some metrics and tables may still refresh as processing finishes.
+          {report.progress_message ?? "Quick preview analytics are ready."} This screen is still showing preview-grade
+          analytics while the full dataset finishes processing, so some values, charts, and row views can still update.
         </div>
       )}
 
-      {payload.metadata.optimized_mode ? (
+      {isExactAnalytics ? (
+        <div className="notice notice--info">
+          Full analytics are complete. Summary metrics now reflect the finished report, and the dashboard labels below
+          show which views are exact versus inspection-only.
+        </div>
+      ) : null}
+
+      {payload.metadata.optimized_mode && !isExactAnalytics ? (
         <div className="notice notice--warning">
-          Large dataset detected. Processing in background with optimized mode.
+          Large dataset detected. Optimized background processing is active so the app can finish the report without
+          freezing the browser.
           {report.job_id ? ` Job ID: ${report.job_id}.` : ""}
         </div>
       ) : null}
@@ -179,7 +202,9 @@ export function AnalysisDashboard({
       <section className="analytics-hero">
         <article className="panel analytics-hero__panel">
           <div className="analytics-hero__topline">
-            <div className="section-eyebrow">Large dataset report</div>
+            <div className="section-eyebrow">
+              {payload.metadata.optimized_mode ? "Optimized analytics report" : "Analytics report"}
+            </div>
             <span className="pill">{formatStatus(report.status)}</span>
           </div>
 
@@ -194,7 +219,10 @@ export function AnalysisDashboard({
             <span className="analytics-badge">{formatStatus(payload.metadata.file_type ?? report.source_type)}</span>
             <span className="analytics-badge">{formatBytes(payload.metadata.file_size_bytes)}</span>
             <span className="analytics-badge">
-              {payload.metadata.is_preview ? "Preview analytics" : "Full analytics"}
+              {isExactAnalytics ? "Exact metrics" : "Preview analytics"}
+            </span>
+            <span className="analytics-badge analytics-badge--secondary">
+              {chartsAreVerified ? "Verified charts" : isProcessing ? "Charts pending verification" : "Fast chart view"}
             </span>
           </div>
 
@@ -209,6 +237,16 @@ export function AnalysisDashboard({
               </div>
             </div>
           ) : null}
+
+          <div className="analytics-story-grid">
+            {accuracyCards.map((card) => (
+              <article className="analytics-story-card" key={card.label}>
+                <span>{card.label}</span>
+                <strong>{card.value}</strong>
+                <p>{card.note}</p>
+              </article>
+            ))}
+          </div>
 
           <div className="button-row">
             <button type="button" className="button button--primary" onClick={handleCopyShareLink}>
@@ -375,7 +413,7 @@ export function AnalysisDashboard({
         <div className="panel__header">
           <div>
             <div className="section-eyebrow">Visual board</div>
-            <h2>Lazy-loaded analytics charts</h2>
+            <h2>{chartsAreVerified ? "Verified analytics charts" : "Analytics charts"}</h2>
           </div>
           <div className="button-row">
             <button
@@ -390,6 +428,8 @@ export function AnalysisDashboard({
           </div>
         </div>
 
+        <div className="notice notice--info">{chartStatusMessage}</div>
+
         {chartsError ? <div className="notice notice--error">{chartsError}</div> : null}
 
         {charts.length ? (
@@ -401,10 +441,11 @@ export function AnalysisDashboard({
         ) : (
           <div className="lazy-shell">
             <p className="muted-copy">
-              Charts are generated only when requested so very large reports stay fast and stable.
+              Charts load on demand so large reports stay responsive while still exposing the final visual evidence
+              when you need it.
             </p>
             {!canLoadCharts && isProcessing ? (
-              <p className="muted-copy">The preview is still indexing data for chart generation.</p>
+              <p className="muted-copy">The report is still preparing the final chart layer.</p>
             ) : null}
           </div>
         )}
@@ -487,7 +528,8 @@ export function AnalysisDashboard({
           </div>
         ) : (
           <p className="muted-copy">
-            Large datasets stay out of browser memory. Open the table only when you need a paginated slice.
+            Open the backend table when you want paginated rows from the stored dataset instead of the small inspection
+            sample shown below.
           </p>
         )}
       </section>
@@ -506,9 +548,14 @@ export function AnalysisDashboard({
       <section className="panel">
         <div className="panel__header">
           <div>
-            <div className="section-eyebrow">Preview</div>
+            <div className="section-eyebrow">Inspection sample</div>
             <h2>Sample rows from the cleaned dataset</h2>
           </div>
+        </div>
+        <div className="notice notice--info">
+          {isExactAnalytics
+            ? "These rows are a small inspection sample for readability. The report-level metrics above are computed from the finished dataset."
+            : "These rows are a preview sample. Full-dataset analytics may still update until background processing completes."}
         </div>
         <div className="table-shell">
           <table className="data-table">
@@ -612,4 +659,70 @@ function buildTopMetrics(
       tone: "mint" as const
     }
   ];
+}
+
+function buildAccuracyCards({
+  payload,
+  report,
+  isProcessing,
+  isExactAnalytics,
+  chartsAreVerified
+}: {
+  payload: ReportPayload;
+  report: ReportDetail;
+  isProcessing: boolean;
+  isExactAnalytics: boolean;
+  chartsAreVerified: boolean;
+}) {
+  return [
+    {
+      label: "Metrics scope",
+      value: isExactAnalytics ? "Full dataset" : "Preview sample",
+      note: isExactAnalytics
+        ? "Summary tables and KPIs reflect the finished analytics run."
+        : "Counts and rankings can still refresh while processing completes."
+    },
+    {
+      label: "Chart status",
+      value: chartsAreVerified ? "Verified visuals" : isProcessing ? "Pending final charts" : "Fast chart mode",
+      note: chartsAreVerified
+        ? "Charts are based on full-dataset counts or full-dataset aggregates."
+        : isProcessing
+          ? "The final chart layer will appear when the background job finishes."
+          : "This report is using a performance-safe chart view for quick review."
+    },
+    {
+      label: "Row access",
+      value: isExactAnalytics ? "Backend paged rows" : "Preview until indexed",
+      note: isExactAnalytics
+        ? "Open the table for paginated rows served directly from stored data."
+        : "The backend table switches from preview rows to indexed rows after processing."
+    }
+  ];
+}
+
+function getChartStatusMessage({
+  chartsLoaded,
+  isProcessing,
+  isExactAnalytics,
+  chartsAreVerified
+}: {
+  chartsLoaded: boolean;
+  isProcessing: boolean;
+  isExactAnalytics: boolean;
+  chartsAreVerified: boolean;
+}) {
+  if (chartsLoaded && chartsAreVerified) {
+    return "These charts are report-grade visuals backed by full-dataset counts or full-dataset aggregates.";
+  }
+
+  if (chartsLoaded && isExactAnalytics) {
+    return "These charts are available for fast interpretation. Use the accuracy cards above to understand whether they are full-dataset or speed-optimized views.";
+  }
+
+  if (isProcessing) {
+    return "Charts shown before completion are preview-oriented. Wait for the report to finish if you need the final verified visual layer.";
+  }
+
+  return "Load charts on demand when you want the visual layer for this report.";
 }

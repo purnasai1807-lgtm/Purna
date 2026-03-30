@@ -1,6 +1,9 @@
 param(
     [switch]$SkipFrontendBuild,
-    [string]$FrontendHost = "0.0.0.0"
+    [string]$FrontendHost = "0.0.0.0",
+    [int]$FrontendPort = 3000,
+    [string]$BackendHost = "127.0.0.1",
+    [int]$BackendPort = 8000
 )
 
 . (Join-Path $PSScriptRoot "_runtime.ps1")
@@ -38,6 +41,62 @@ function Get-PrimaryIpv4Address {
     }
 }
 
+function Test-PortAvailable {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BindHost,
+        [Parameter(Mandatory = $true)]
+        [int]$Port
+    )
+
+    $listener = $null
+
+    try {
+        $ipAddress =
+            if ($BindHost -eq "0.0.0.0") {
+                [System.Net.IPAddress]::Any
+            } else {
+                [System.Net.IPAddress]::Parse($BindHost)
+            }
+
+        $listener = [System.Net.Sockets.TcpListener]::new($ipAddress, $Port)
+        $listener.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($null -ne $listener) {
+            $listener.Stop()
+        }
+    }
+}
+
+function Resolve-AvailablePort {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BindHost,
+        [Parameter(Mandatory = $true)]
+        [int]$PreferredPort,
+        [int]$SearchWindow = 20
+    )
+
+    if (Test-PortAvailable -BindHost $BindHost -Port $PreferredPort) {
+        return $PreferredPort
+    }
+
+    for ($candidatePort = $PreferredPort + 1; $candidatePort -le ($PreferredPort + $SearchWindow); $candidatePort += 1) {
+        if (Test-PortAvailable -BindHost $BindHost -Port $candidatePort) {
+            return $candidatePort
+        }
+    }
+
+    throw "No available TCP port found for $BindHost starting at $PreferredPort."
+}
+
+$resolvedBackendPort = Resolve-AvailablePort -BindHost $BackendHost -PreferredPort $BackendPort
+$resolvedFrontendPort = Resolve-AvailablePort -BindHost $FrontendHost -PreferredPort $FrontendPort
+Set-RuntimeConfig -BackendHost $BackendHost -BackendPort $resolvedBackendPort -FrontendHost $FrontendHost -FrontendPort $resolvedFrontendPort
+
 $backend = Get-ServiceDefinition -Name "backend"
 $frontend = Get-ServiceDefinition -Name "frontend"
 
@@ -58,15 +117,9 @@ if ($pythonRuntime.PythonPath) {
 }
 
 $env:NODE_ENV = "production"
-if (-not $env:NEXT_PUBLIC_API_BASE_URL) {
-    $env:NEXT_PUBLIC_API_BASE_URL = "/api/proxy/api/v1"
-}
-if (-not $env:LOCAL_BACKEND_API_URL) {
-    $env:LOCAL_BACKEND_API_URL = "http://127.0.0.1:8000/api/v1"
-}
-if (-not $env:NEXT_PUBLIC_DIRECT_BACKEND_API_URL) {
-    $env:NEXT_PUBLIC_DIRECT_BACKEND_API_URL = "http://127.0.0.1:8000/api/v1"
-}
+$env:NEXT_PUBLIC_API_BASE_URL = "/api/proxy/api/v1"
+$env:LOCAL_BACKEND_API_URL = "http://$BackendHost`:$resolvedBackendPort/api/v1"
+$env:NEXT_PUBLIC_DIRECT_BACKEND_API_URL = "http://$BackendHost`:$resolvedBackendPort/api/v1"
 
 try {
     if (-not $SkipFrontendBuild) {
@@ -86,7 +139,7 @@ try {
     Write-Host "Starting backend..."
     $backendProcess = Start-Process `
         -FilePath $pythonExe `
-        -ArgumentList @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000") `
+        -ArgumentList @("-m", "uvicorn", "app.main:app", "--host", $BackendHost, "--port", "$resolvedBackendPort") `
         -WorkingDirectory $script:BackendDir `
         -RedirectStandardOutput $backend.LogFile `
         -RedirectStandardError $backend.ErrorFile `
@@ -97,7 +150,7 @@ try {
     Write-Host "Starting frontend..."
     $frontendProcess = Start-Process `
         -FilePath $nodeExe `
-        -ArgumentList @("`"$nextBin`"", "start", "--hostname", $FrontendHost, "--port", "3000") `
+        -ArgumentList @("`"$nextBin`"", "start", "--hostname", $FrontendHost, "--port", "$resolvedFrontendPort") `
         -WorkingDirectory $script:FrontendDir `
         -RedirectStandardOutput $frontend.LogFile `
         -RedirectStandardError $frontend.ErrorFile `
@@ -112,11 +165,11 @@ try {
 
 Write-Host ""
 Write-Host "Auto Analytics AI is running in the background."
-Write-Host "Frontend: http://127.0.0.1:3000"
-Write-Host "Backend:  http://127.0.0.1:8000/health"
+Write-Host "Frontend: http://127.0.0.1:$resolvedFrontendPort"
+Write-Host "Backend:  http://127.0.0.1:$resolvedBackendPort/health"
 $networkIp = Get-PrimaryIpv4Address
 if ($networkIp) {
-    Write-Host "Network:  http://$networkIp`:3000"
+    Write-Host "Network:  http://$networkIp`:$resolvedFrontendPort"
 }
 Write-Host "Logs:     $script:RuntimeDir"
 Write-Host ""

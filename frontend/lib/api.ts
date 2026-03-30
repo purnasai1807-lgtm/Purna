@@ -780,6 +780,13 @@ export function login(payload: LoginPayload): Promise<AuthResponse> {
   });
 }
 
+export function loginPublicUser(): Promise<AuthResponse> {
+  return request<AuthResponse>("/auth/public", {
+    method: "POST",
+    timeoutMs: 120_000
+  });
+}
+
 export function getCurrentUser(token: string): Promise<User> {
   return request<User>("/auth/me", { token, retries: 2, timeoutMs: 30_000 });
 }

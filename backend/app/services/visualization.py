@@ -38,15 +38,15 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
     ]
     if categorical_columns:
         categorical_column = categorical_columns[0]
-        counts = (
+        full_counts = (
             dataframe[categorical_column]
             .astype(str)
             .value_counts()
-            .head(10)
             .rename_axis(categorical_column)
             .reset_index(name="count")
-            .sort_values("count", ascending=True)
         )
+        top_counts = full_counts.head(10).copy()
+        counts = top_counts.sort_values("count", ascending=True)
         bar_figure = px.bar(
             counts,
             x="count",
@@ -68,7 +68,19 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
                 figure=bar_figure,
             )
         )
-        pie_counts = counts.head(5)
+        pie_counts = top_counts.head(5).copy()
+        total_count = int(full_counts["count"].sum())
+        top_five_count = int(pie_counts["count"].sum())
+        if total_count > top_five_count:
+            pie_counts = pd.concat(
+                [
+                    pie_counts,
+                    pd.DataFrame(
+                        [{categorical_column: "Other", "count": total_count - top_five_count}]
+                    ),
+                ],
+                ignore_index=True,
+            )
         pie_figure = px.pie(
             pie_counts,
             names=categorical_column,
@@ -88,7 +100,7 @@ def generate_chart_specs(dataframe: pd.DataFrame, correlations: dict[str, Any]) 
                 chart_id=f"pie-{categorical_column}",
                 chart_type="pie",
                 title=f"Pie chart for {categorical_column}",
-                description="Highlights the category distribution across the most frequent labels.",
+                description="Highlights the category distribution across the most frequent labels plus Other.",
                 figure=pie_figure,
             )
         )

@@ -15,7 +15,7 @@ from app.services.processing import (
 import traceback
 logger = logging.getLogger(__name__)
 class AnalyticsJobManager:
-    retry_count_attr = 'retry_count'  # Class attr for retry tracking
+    retry_count_attr = 'retry_count'  
     def __init__(self) -> None:
         self._lock = Lock()
         self._executor = (
@@ -79,7 +79,6 @@ class AnalyticsJobManager:
     def _clear(self, cache_entry_id: str) -> None:
         with self._lock:
             self._futures.pop(cache_entry_id, None)
-
     def _handle_job_failure(self, cache_entry_id: str, exc: Exception) -> None:
         logger.error("Background job failed: cache_entry_id=%s error=%s", cache_entry_id, exc, exc_info=True)
         max_retries = 3
@@ -135,5 +134,4 @@ class AnalyticsJobManager:
                 task_result.id,
             )
             return task_result.id
-
 job_manager = AnalyticsJobManager()

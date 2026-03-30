@@ -1,3 +1,5 @@
+export type AuthMode = "account" | "public";
+
 export type User = {
   id: string;
   email: string;

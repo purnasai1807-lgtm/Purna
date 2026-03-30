@@ -2,6 +2,8 @@
 
 Auto Analytics AI is a production-oriented full-stack web application for automatic data analytics. Users can sign up, upload CSV or Excel files, enter data manually, and receive cleaned datasets, summary statistics, correlations, outlier detection, trends, charts, machine learning suggestions, saved history, PDF exports, and public share links.
 
+The app now also supports a permanent public workspace login. That public user is stored in the database, and returning browsers automatically restore the public session if the old token expires.
+
 ## 1. Project Architecture
 
 ### Frontend
@@ -93,6 +95,11 @@ APP_ENV=development
 API_V1_PREFIX=/api/v1
 SECRET_KEY=replace-with-a-long-random-secret
 ACCESS_TOKEN_EXPIRE_MINUTES=1440
+PUBLIC_ACCESS_ENABLED=true
+PUBLIC_ACCESS_EMAIL=public@autoanalytics.local
+PUBLIC_ACCESS_FULL_NAME=Public Workspace
+PUBLIC_ACCESS_PASSWORD=change-this-public-password
+PUBLIC_ACCESS_TOKEN_EXPIRE_MINUTES=43200
 DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/auto_analytics_ai
 CORS_ORIGINS=http://localhost:3000,https://your-vercel-app.vercel.app
 REPORT_BASE_URL=http://localhost:3000
@@ -161,6 +168,14 @@ What this does:
 
 This keeps the app running after VS Code is closed, but it still depends on your computer staying on. For true 24/7 uptime, deploy the backend and frontend using the Render and Vercel steps below.
 
+### Public workspace login
+
+The auth screen includes a `Continue as public user` action.
+
+- It creates or reuses a database-backed public account.
+- Returning browsers restore that public session automatically.
+- Because it is a shared public workspace, reports created there are visible to anyone using the same public login.
+
 ## 7. Production Deployment Steps
 
 ### Backend on Render
@@ -203,6 +218,7 @@ When deployed this way, the app is publicly accessible from anywhere on the inte
 Main endpoints:
 - `POST /api/v1/auth/signup`
 - `POST /api/v1/auth/login`
+- `POST /api/v1/auth/public`
 - `GET /api/v1/auth/me`
 - `POST /api/v1/analysis/upload`
 - `POST /api/v1/analysis/manual`

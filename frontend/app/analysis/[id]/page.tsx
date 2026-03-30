@@ -49,8 +49,9 @@ export default function AnalysisPage() {
         setError("");
 
         if (!["completed", "failed"].includes(nextReport.status)) {
-          if (nextReport.job_id) {
-            timeoutId = window.setTimeout(() => void loadJobStatus(nextReport.job_id), 3000);
+          const jobId = nextReport.job_id;
+          if (jobId) {
+            timeoutId = window.setTimeout(() => void loadJobStatus(jobId), 3000);
           } else {
             timeoutId = window.setTimeout(() => void loadReport(false), 3000);
           }

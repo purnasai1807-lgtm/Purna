@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import copy
 import logging
 import random
@@ -7,34 +6,44 @@ from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
 import duckdb
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import pyarrow as pa
 import pyarrow.parquet as pq
 from openpyxl import load_workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
-
 from app.core.config import settings
 from app.db.models import AnalysisCacheEntry, AnalysisReport, AnalysisReportCacheLink, User
 from app.db.session import SessionLocal
 from app.services.analytics import (
     analyze_dataframe,
+    analyze_trends,
     build_correlation_analysis,
     build_excel_columns,
     build_narrative,
+    build_overview,
     build_section_status,
     clean_dataframe,
     normalize_column_name,
     parse_uploaded_dataframe,
     sanitize_for_json,
 )
+from app.services.modeling import build_modeling_summary
 from app.services.storage import StoredUpload, build_parquet_path
 from app.services.storage import ensure_local_storage_copy
-from app.services.visualization import generate_chart_specs
-
+from app.services.visualization import (
+    DASHBOARD_COLORS,
+    HEATMAP_SCALE,
+    build_chart_payload,
+    generate_chart_specs,
+    style_figure,
+)
 MAX_CORRELATION_COLUMNS = 8
+MAX_EXACT_CHART_POINTS = 180
+MAX_EXACT_SCATTER_BINS = 28
 PROCESSING_STATUSES = {"queued", "preview_ready", "processing"}
 FINAL_STATUSES = {"completed", "failed"}
 SUPPORTED_REPORT_SECTIONS = {
@@ -50,40 +59,28 @@ SUPPORTED_REPORT_SECTIONS = {
 }
 logger = logging.getLogger(__name__)
 SAMPLING_RANDOM_SEED = 42
-
-
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
-
-
 @dataclass(slots=True)
 class ColumnDefinition:
     original_name: str
     normalized_name: str
     inferred_kind: str
     display_dtype: str
-
-
 def build_processing_strategy(processing_mode: str) -> str:
     if processing_mode == "small":
         return "direct"
     if processing_mode == "medium":
         return "chunked"
     return "optimized_background"
-
-
 def is_optimized_mode(processing_mode: str) -> bool:
     return processing_mode == "large"
-
-
 def get_preview_ready_state(processing_mode: str) -> tuple[int, str]:
     if processing_mode == "small":
         return 100, "Analytics complete."
     if processing_mode == "medium":
         return 30, "Chunk-based analytics are running in the background."
     return 24, "Large dataset detected. Processing in optimized mode."
-
-
 def find_cache_entry(
     db: Session,
     *,
@@ -95,8 +92,6 @@ def find_cache_entry(
         AnalysisCacheEntry.target_column == target_column,
     )
     return db.scalar(statement)
-
-
 def create_cache_entry(
     db: Session,
     *,
@@ -336,6 +331,69 @@ def build_small_file_payload(
     return sanitize_for_json(payload)
 
 
+def build_large_sample_payload(
+    *,
+    sample_frame: pd.DataFrame,
+    dataset_name: str,
+    target_column: str | None,
+    processing_mode: str,
+    file_type: str,
+    file_size_bytes: int | None,
+) -> dict[str, Any]:
+    if sample_frame.empty:
+        raise ValueError("The uploaded dataset did not contain any readable rows.")
+
+    cleaned_frame, cleaning_summary = clean_dataframe(sample_frame.copy())
+    if cleaned_frame.empty:
+        raise ValueError("The dataset is empty after cleaning. Please provide rows with actual values.")
+
+    normalized_target = normalize_column_name(target_column) if target_column else None
+    if normalized_target and normalized_target not in cleaned_frame.columns:
+        raise ValueError(
+            f"Target column '{target_column}' was not found after cleaning. "
+            "Use one of the cleaned column names shown in the dashboard."
+        )
+
+    overview = build_overview(
+        sample_frame,
+        cleaned_frame,
+        cleaning_summary,
+        normalized_target,
+    )
+
+    return {
+        "dataset_name": dataset_name,
+        "source_type": "upload",
+        "target_column": normalized_target,
+        "overview": overview,
+        "cleaning": cleaning_summary,
+        "trends": analyze_trends(cleaned_frame),
+        "modeling": build_modeling_summary(cleaned_frame, normalized_target),
+        "metadata": {
+            "is_preview": False,
+            "processing_mode": processing_mode,
+            "file_type": file_type,
+            "file_size_bytes": file_size_bytes,
+            "sample_row_count": int(len(cleaned_frame)),
+        },
+    }
+
+
+def fetch_single_row_mapping(
+    connection: duckdb.DuckDBPyConnection,
+    query: str,
+) -> dict[str, Any]:
+    result = connection.execute(query)
+    row = result.fetchone()
+    if row is None:
+        return {}
+
+    return {
+        str(column_metadata[0]): value
+        for column_metadata, value in zip(result.description or [], row)
+    }
+
+
 def process_cache_entry(cache_entry_id: str) -> None:
     try:
         logger.info(f"Processing cache entry {cache_entry_id} started")
@@ -421,9 +479,7 @@ def process_cache_entry(cache_entry_id: str) -> None:
             cache_entry.failed_at = utcnow()
             propagate_cache_state_to_reports(db, cache_entry)
             db.commit()
-        raise  # Re-raise for job_manager to catch
-
-
+        raise  
 def build_full_payload(cache_entry: AnalysisCacheEntry) -> dict[str, Any]:
     canonical_dataset_name = Path(cache_entry.original_filename).stem or "dataset"
     with managed_dataset_connection(cache_entry) as connection:
@@ -431,22 +487,13 @@ def build_full_payload(cache_entry: AnalysisCacheEntry) -> dict[str, Any]:
             connection,
             settings.analytics_sample_rows,
         )
-        if sample_frame.empty:
-            raise ValueError("The uploaded dataset did not contain any readable rows.")
-
-        sample_payload = analyze_dataframe(
-            sample_frame,
+        sample_payload = build_large_sample_payload(
+            sample_frame=sample_frame,
             dataset_name=canonical_dataset_name,
-            source_type="upload",
             target_column=cache_entry.target_column,
-            include_charts=False,
-            metadata={
-                "is_preview": False,
-                "processing_mode": cache_entry.processing_mode,
-                "file_type": cache_entry.file_type,
-                "file_size_bytes": cache_entry.file_size_bytes,
-                "sample_row_count": int(len(sample_frame)),
-            },
+            processing_mode=cache_entry.processing_mode,
+            file_type=cache_entry.file_type,
+            file_size_bytes=cache_entry.file_size_bytes,
         )
         column_definitions = build_column_definitions(sample_frame, sample_payload)
         row_count = int(connection.execute("SELECT COUNT(*) FROM dataset_source").fetchone()[0])
@@ -575,21 +622,38 @@ def build_column_profiles(
     column_definitions: list[ColumnDefinition],
     sample_payload: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    if not column_definitions:
+        return []
+
     sample_profiles = {
         profile["column"]: profile for profile in sample_payload.get("overview", {}).get("columns", [])
     }
+    aggregate_expressions: list[str] = []
+    for index, definition in enumerate(column_definitions):
+        identifier = quote_identifier(definition.original_name)
+        aggregate_expressions.extend(
+            [
+                (
+                    f"SUM(CASE WHEN {missing_condition_sql(definition.original_name)} THEN 1 ELSE 0 END) "
+                    f"AS missing_count__{index}"
+                ),
+                (
+                    "COUNT(DISTINCT CASE WHEN "
+                    f"{missing_condition_sql(definition.original_name)} THEN NULL "
+                    f"ELSE {identifier} END) AS unique_values__{index}"
+                ),
+            ]
+        )
+
+    aggregate_values = fetch_single_row_mapping(
+        connection,
+        f"SELECT {', '.join(aggregate_expressions)} FROM dataset_source",
+    )
     profiles: list[dict[str, Any]] = []
 
-    for definition in column_definitions:
-        identifier = quote_identifier(definition.original_name)
-        profile_query = f"""
-            SELECT
-                SUM(CASE WHEN {missing_condition_sql(definition.original_name)} THEN 1 ELSE 0 END) AS missing_count,
-                APPROX_COUNT_DISTINCT({identifier}) AS unique_values
-            FROM dataset_source
-        """
-        missing_count_raw, unique_values_raw = connection.execute(profile_query).fetchone()
-        missing_count = int(missing_count_raw or 0)
+    for index, definition in enumerate(column_definitions):
+        missing_count = int(aggregate_values.get(f"missing_count__{index}") or 0)
+        unique_values = int(aggregate_values.get(f"unique_values__{index}") or 0)
         sample_values = sample_profiles.get(definition.normalized_name, {}).get("sample_values", [])
         profiles.append(
             {
@@ -597,12 +661,124 @@ def build_column_profiles(
                 "dtype": definition.display_dtype,
                 "missing_count": missing_count,
                 "missing_percentage": round((missing_count / row_count * 100), 2) if row_count else 0.0,
-                "unique_values": int(unique_values_raw or 0),
+                "unique_values": unique_values,
                 "sample_values": sample_values,
             }
         )
 
     return profiles
+
+
+def build_large_numeric_summary_lookup(
+    connection: duckdb.DuckDBPyConnection,
+    column_definitions: list[ColumnDefinition],
+) -> dict[str, dict[str, Any]]:
+    numeric_definitions = [definition for definition in column_definitions if definition.inferred_kind == "numeric"]
+    if not numeric_definitions:
+        return {}
+
+    typed_columns = [
+        f"TRY_CAST({quote_identifier(definition.original_name)} AS DOUBLE) AS value__{index}"
+        for index, definition in enumerate(numeric_definitions)
+    ]
+    aggregate_expressions: list[str] = []
+    for index in range(len(numeric_definitions)):
+        aggregate_expressions.extend(
+            [
+                f"AVG(value__{index}) AS mean__{index}",
+                f"QUANTILE_CONT(value__{index}, 0.5) AS median__{index}",
+                f"STDDEV_POP(value__{index}) AS std__{index}",
+                f"MIN(value__{index}) AS min__{index}",
+                f"MAX(value__{index}) AS max__{index}",
+                f"QUANTILE_CONT(value__{index}, 0.25) AS q1__{index}",
+                f"QUANTILE_CONT(value__{index}, 0.75) AS q3__{index}",
+            ]
+        )
+
+    aggregate_values = fetch_single_row_mapping(
+        connection,
+        (
+            "WITH typed AS ("
+            f"SELECT {', '.join(typed_columns)} FROM dataset_source"
+            ") "
+            f"SELECT {', '.join(aggregate_expressions)} FROM typed"
+        ),
+    )
+
+    lookup: dict[str, dict[str, Any]] = {}
+    for index, definition in enumerate(numeric_definitions):
+        min_value = aggregate_values.get(f"min__{index}")
+        if min_value is None:
+            continue
+
+        lookup[definition.normalized_name] = {
+            "mean": round(float(aggregate_values.get(f"mean__{index}")), 4)
+            if aggregate_values.get(f"mean__{index}") is not None
+            else None,
+            "median": round(float(aggregate_values.get(f"median__{index}")), 4)
+            if aggregate_values.get(f"median__{index}") is not None
+            else None,
+            "std": round(float(aggregate_values.get(f"std__{index}")), 4)
+            if aggregate_values.get(f"std__{index}") is not None
+            else None,
+            "min": round(float(min_value), 4),
+            "max": round(float(aggregate_values.get(f"max__{index}")), 4)
+            if aggregate_values.get(f"max__{index}") is not None
+            else None,
+            "q1": round(float(aggregate_values.get(f"q1__{index}")), 4)
+            if aggregate_values.get(f"q1__{index}") is not None
+            else None,
+            "q3": round(float(aggregate_values.get(f"q3__{index}")), 4)
+            if aggregate_values.get(f"q3__{index}") is not None
+            else None,
+        }
+
+    return lookup
+
+
+def build_large_datetime_summary_lookup(
+    connection: duckdb.DuckDBPyConnection,
+    column_definitions: list[ColumnDefinition],
+) -> dict[str, dict[str, Any]]:
+    datetime_definitions = [definition for definition in column_definitions if definition.inferred_kind == "datetime"]
+    if not datetime_definitions:
+        return {}
+
+    typed_columns = [
+        f"TRY_CAST({quote_identifier(definition.original_name)} AS TIMESTAMP) AS value__{index}"
+        for index, definition in enumerate(datetime_definitions)
+    ]
+    aggregate_expressions: list[str] = []
+    for index in range(len(datetime_definitions)):
+        aggregate_expressions.extend(
+            [
+                f"MIN(value__{index}) AS min__{index}",
+                f"MAX(value__{index}) AS max__{index}",
+            ]
+        )
+
+    aggregate_values = fetch_single_row_mapping(
+        connection,
+        (
+            "WITH typed AS ("
+            f"SELECT {', '.join(typed_columns)} FROM dataset_source"
+            ") "
+            f"SELECT {', '.join(aggregate_expressions)} FROM typed"
+        ),
+    )
+
+    lookup: dict[str, dict[str, Any]] = {}
+    for index, definition in enumerate(datetime_definitions):
+        lookup[definition.normalized_name] = {
+            "min": aggregate_values.get(f"min__{index}").isoformat()
+            if aggregate_values.get(f"min__{index}") is not None
+            else None,
+            "max": aggregate_values.get(f"max__{index}").isoformat()
+            if aggregate_values.get(f"max__{index}") is not None
+            else None,
+        }
+
+    return lookup
 
 
 def build_large_summary_statistics(
@@ -613,6 +789,8 @@ def build_large_summary_statistics(
     column_profiles: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     profile_lookup = {profile["column"]: profile for profile in column_profiles}
+    numeric_summary_lookup = build_large_numeric_summary_lookup(connection, column_definitions)
+    datetime_summary_lookup = build_large_datetime_summary_lookup(connection, column_definitions)
     summary_statistics: list[dict[str, Any]] = []
 
     for definition in column_definitions:
@@ -626,54 +804,9 @@ def build_large_summary_statistics(
         identifier = quote_identifier(definition.original_name)
 
         if definition.inferred_kind == "numeric":
-            numeric_value = f"TRY_CAST({identifier} AS DOUBLE)"
-            numeric_query = f"""
-                SELECT
-                    AVG(value) AS mean_value,
-                    QUANTILE_CONT(value, 0.5) AS median_value,
-                    STDDEV_POP(value) AS std_value,
-                    MIN(value) AS min_value,
-                    MAX(value) AS max_value,
-                    QUANTILE_CONT(value, 0.25) AS q1_value,
-                    QUANTILE_CONT(value, 0.75) AS q3_value
-                FROM (
-                    SELECT {numeric_value} AS value
-                    FROM dataset_source
-                )
-                WHERE value IS NOT NULL
-            """
-            mean_value, median_value, std_value, min_value, max_value, q1_value, q3_value = connection.execute(
-                numeric_query
-            ).fetchone()
-            if min_value is not None:
-                base_stats.update(
-                    {
-                        "mean": round(float(mean_value), 4) if mean_value is not None else None,
-                        "median": round(float(median_value), 4) if median_value is not None else None,
-                        "std": round(float(std_value), 4) if std_value is not None else None,
-                        "min": round(float(min_value), 4) if min_value is not None else None,
-                        "max": round(float(max_value), 4) if max_value is not None else None,
-                        "q1": round(float(q1_value), 4) if q1_value is not None else None,
-                        "q3": round(float(q3_value), 4) if q3_value is not None else None,
-                    }
-                )
+            base_stats.update(numeric_summary_lookup.get(definition.normalized_name, {}))
         elif definition.inferred_kind == "datetime":
-            datetime_value = f"TRY_CAST({identifier} AS TIMESTAMP)"
-            datetime_query = f"""
-                SELECT MIN(value) AS min_value, MAX(value) AS max_value
-                FROM (
-                    SELECT {datetime_value} AS value
-                    FROM dataset_source
-                )
-                WHERE value IS NOT NULL
-            """
-            min_value, max_value = connection.execute(datetime_query).fetchone()
-            base_stats.update(
-                {
-                    "min": min_value.isoformat() if min_value is not None else None,
-                    "max": max_value.isoformat() if max_value is not None else None,
-                }
-            )
+            base_stats.update(datetime_summary_lookup.get(definition.normalized_name, {}))
         else:
             top_value_query = f"""
                 SELECT CAST({identifier} AS VARCHAR) AS value, COUNT(*) AS frequency
@@ -754,51 +887,96 @@ def build_large_outliers(
     connection: duckdb.DuckDBPyConnection,
     column_definitions: list[ColumnDefinition],
 ) -> list[dict[str, Any]]:
-    outliers: list[dict[str, Any]] = []
+    numeric_definitions = [item for item in column_definitions if item.inferred_kind == "numeric"]
+    if not numeric_definitions:
+        return []
 
-    for definition in [item for item in column_definitions if item.inferred_kind == "numeric"]:
-        identifier = quote_identifier(definition.original_name)
-        value_sql = f"TRY_CAST({identifier} AS DOUBLE)"
-        quartile_query = f"""
-            SELECT
-                QUANTILE_CONT(value, 0.25) AS q1_value,
-                QUANTILE_CONT(value, 0.75) AS q3_value,
-                COUNT(*) AS non_null_count
-            FROM (
-                SELECT {value_sql} AS value
-                FROM dataset_source
-            )
-            WHERE value IS NOT NULL
-        """
-        q1_value, q3_value, non_null_count = connection.execute(quartile_query).fetchone()
-        if q1_value is None or q3_value is None or int(non_null_count or 0) < 4:
+    typed_columns = [
+        f"TRY_CAST({quote_identifier(definition.original_name)} AS DOUBLE) AS value__{index}"
+        for index, definition in enumerate(numeric_definitions)
+    ]
+    quartile_expressions: list[str] = []
+    for index in range(len(numeric_definitions)):
+        quartile_expressions.extend(
+            [
+                f"QUANTILE_CONT(value__{index}, 0.25) AS q1__{index}",
+                f"QUANTILE_CONT(value__{index}, 0.75) AS q3__{index}",
+                f"COUNT(value__{index}) AS non_null_count__{index}",
+            ]
+        )
+
+    quartile_values = fetch_single_row_mapping(
+        connection,
+        (
+            "WITH typed AS ("
+            f"SELECT {', '.join(typed_columns)} FROM dataset_source"
+            ") "
+            f"SELECT {', '.join(quartile_expressions)} FROM typed"
+        ),
+    )
+
+    bounds_by_index: dict[int, dict[str, float | int | str]] = {}
+    for index, definition in enumerate(numeric_definitions):
+        q1_value = quartile_values.get(f"q1__{index}")
+        q3_value = quartile_values.get(f"q3__{index}")
+        non_null_count = int(quartile_values.get(f"non_null_count__{index}") or 0)
+        if q1_value is None or q3_value is None or non_null_count < 4:
             continue
 
         iqr = float(q3_value) - float(q1_value)
         if iqr == 0:
             continue
 
-        lower_bound = float(q1_value) - (1.5 * iqr)
-        upper_bound = float(q3_value) + (1.5 * iqr)
-        count_query = f"""
-            SELECT COUNT(*)
-            FROM (
-                SELECT {value_sql} AS value
-                FROM dataset_source
-            )
-            WHERE value IS NOT NULL AND (value < {lower_bound} OR value > {upper_bound})
-        """
-        outlier_count = int(connection.execute(count_query).fetchone()[0] or 0)
-        if outlier_count:
-            outliers.append(
-                {
-                    "column": definition.normalized_name,
-                    "count": outlier_count,
-                    "percentage": round(outlier_count / max(int(non_null_count), 1) * 100, 2),
-                    "lower_bound": round(lower_bound, 4),
-                    "upper_bound": round(upper_bound, 4),
-                }
-            )
+        bounds_by_index[index] = {
+            "column": definition.normalized_name,
+            "non_null_count": non_null_count,
+            "lower_bound": float(q1_value) - (1.5 * iqr),
+            "upper_bound": float(q3_value) + (1.5 * iqr),
+        }
+
+    if not bounds_by_index:
+        return []
+
+    outlier_count_expressions = [
+        (
+            "SUM(CASE WHEN value__{index} IS NOT NULL AND "
+            "(value__{index} < {lower_bound} OR value__{index} > {upper_bound}) "
+            "THEN 1 ELSE 0 END) AS outlier_count__{index}"
+        ).format(
+            index=index,
+            lower_bound=bounds["lower_bound"],
+            upper_bound=bounds["upper_bound"],
+        )
+        for index, bounds in bounds_by_index.items()
+    ]
+    outlier_count_values = fetch_single_row_mapping(
+        connection,
+        (
+            "WITH typed AS ("
+            f"SELECT {', '.join(typed_columns)} FROM dataset_source"
+            ") "
+            f"SELECT {', '.join(outlier_count_expressions)} FROM typed"
+        ),
+    )
+
+    outliers: list[dict[str, Any]] = []
+    for index, bounds in bounds_by_index.items():
+        outlier_count = int(outlier_count_values.get(f"outlier_count__{index}") or 0)
+        if not outlier_count:
+            continue
+
+        non_null_count = int(bounds["non_null_count"])
+        lower_bound = float(bounds["lower_bound"])
+        upper_bound = float(bounds["upper_bound"])
+        outliers.append(
+            {
+                "column": bounds["column"],
+                "count": outlier_count,
+                "percentage": round(outlier_count / max(non_null_count, 1) * 100, 2),
+                "lower_bound": round(lower_bound, 4),
+                "upper_bound": round(upper_bound, 4),
+            }
+        )
 
     return outliers
 
@@ -918,8 +1096,6 @@ def get_report_rows_page(
             "rows": sanitize_for_json(rows.to_dict(orient="records")),
             "is_preview": cache_entry.status != "completed",
         }
-
-
 def build_column_definitions_from_payload(
     payload: dict[str, Any],
     connection: duckdb.DuckDBPyConnection,
@@ -942,8 +1118,6 @@ def build_column_definitions_from_payload(
             )
         )
     return definitions
-
-
 def get_cache_entry_for_report(db: Session, report_id: str) -> AnalysisCacheEntry | None:
     statement = (
         select(AnalysisCacheEntry)
@@ -951,14 +1125,10 @@ def get_cache_entry_for_report(db: Session, report_id: str) -> AnalysisCacheEntr
         .where(AnalysisReportCacheLink.report_id == report_id)
     )
     return db.scalar(statement)
-
-
 def should_convert_to_parquet(cache_entry: AnalysisCacheEntry) -> bool:
     if cache_entry.file_type == "csv":
         return cache_entry.processing_mode in {"medium", "large"}
     return True
-
-
 def convert_to_parquet_if_needed(cache_entry: AnalysisCacheEntry) -> Path | None:
     destination = build_parquet_path(cache_entry.content_hash)
     if destination.exists():
@@ -983,8 +1153,6 @@ def convert_to_parquet_if_needed(cache_entry: AnalysisCacheEntry) -> Path | None
         return destination
 
     return None
-
-
 def convert_relation_file_to_parquet(source_path: Path, destination: Path, file_type: str) -> None:
     relation_sql = build_relation_sql_from_path(source_path, file_type=file_type)
     connection = duckdb.connect()
@@ -994,8 +1162,6 @@ def convert_relation_file_to_parquet(source_path: Path, destination: Path, file_
         )
     finally:
         connection.close()
-
-
 def convert_modern_excel_to_parquet(source_path: Path, destination: Path) -> None:
     workbook = load_workbook(source_path, read_only=True, data_only=True)
     writer: pq.ParquetWriter | None = None
@@ -1028,8 +1194,6 @@ def convert_modern_excel_to_parquet(source_path: Path, destination: Path) -> Non
         workbook.close()
         if writer is not None:
             writer.close()
-
-
 def convert_legacy_excel_to_parquet(source_path: Path, destination: Path) -> None:
     writer: pq.ParquetWriter | None = None
     rows_to_skip = 0
@@ -1063,8 +1227,6 @@ def convert_legacy_excel_to_parquet(source_path: Path, destination: Path) -> Non
     finally:
         if writer is not None:
             writer.close()
-
-
 def write_excel_chunk(
     writer: pq.ParquetWriter | None,
     destination: Path,
@@ -1082,8 +1244,6 @@ def write_excel_chunk(
         writer = pq.ParquetWriter(destination, table.schema)
     writer.write_table(table)
     return writer
-
-
 def write_dataframe_chunk(
     writer: pq.ParquetWriter | None,
     destination: Path,
@@ -1099,8 +1259,6 @@ def write_dataframe_chunk(
         writer = pq.ParquetWriter(destination, table.schema)
     writer.write_table(table)
     return writer
-
-
 def stringify_cell_value(value: Any) -> str | None:
     if value is None:
         return None
@@ -1115,22 +1273,567 @@ def stringify_cell_value(value: Any) -> str | None:
     return text or None
 
 
+def to_sql_number(value: float) -> str:
+    return f"{float(value):.15g}"
+
+
+def format_chart_tick(value: float) -> str:
+    return f"{float(value):.4g}"
+
+
+def build_exact_categorical_charts(
+    connection: duckdb.DuckDBPyConnection,
+    definition: ColumnDefinition,
+) -> list[dict[str, Any]]:
+    identifier = quote_identifier(definition.original_name)
+    counts_query = f"""
+        SELECT CAST({identifier} AS VARCHAR) AS category, COUNT(*) AS frequency
+        FROM dataset_source
+        WHERE NOT ({missing_condition_sql(definition.original_name)})
+        GROUP BY 1
+        ORDER BY frequency DESC, category ASC
+    """
+    counts_frame = connection.execute(counts_query).fetchdf()
+    if counts_frame.empty:
+        return []
+
+    column_name = definition.normalized_name
+    counts_frame = counts_frame.rename(columns={"category": column_name, "frequency": "count"})
+    total_count = int(counts_frame["count"].sum())
+    top_ten = counts_frame.head(10).copy()
+    top_five = counts_frame.head(5).copy()
+    other_count = max(total_count - int(top_five["count"].sum()), 0)
+    if other_count:
+        top_five = pd.concat(
+            [
+                top_five,
+                pd.DataFrame([{column_name: "Other", "count": other_count}]),
+            ],
+            ignore_index=True,
+        )
+
+    bar_counts = top_ten.sort_values("count", ascending=True)
+    bar_figure = px.bar(
+        bar_counts,
+        x="count",
+        y=column_name,
+        orientation="h",
+        color="count",
+        text="count",
+        title=f"Top values in {column_name}",
+        color_continuous_scale=["#DCCBFF", "#7C3AED"],
+    )
+    bar_figure.update_traces(textposition="outside", cliponaxis=False)
+    style_figure(bar_figure)
+
+    pie_figure = px.pie(
+        top_five,
+        names=column_name,
+        values="count",
+        title=f"Category share for {column_name}",
+        hole=0.58,
+        color_discrete_sequence=DASHBOARD_COLORS,
+    )
+    pie_figure.update_traces(
+        textinfo="label+percent",
+        pull=[0.06 if index == 0 else 0 for index in range(len(top_five))],
+        marker={"line": {"color": "#fff8df", "width": 2}},
+    )
+    style_figure(pie_figure)
+
+    return [
+        build_chart_payload(
+            chart_id=f"bar-{column_name}",
+            chart_type="bar",
+            title=f"Bar chart for {column_name}",
+            description="Shows the most common categories using full-dataset counts.",
+            figure=bar_figure,
+        ),
+        build_chart_payload(
+            chart_id=f"pie-{column_name}",
+            chart_type="pie",
+            title=f"Pie chart for {column_name}",
+            description="Shows the full-dataset category share for the top labels plus Other.",
+            figure=pie_figure,
+        ),
+    ]
+
+
+def build_exact_histogram_chart(
+    connection: duckdb.DuckDBPyConnection,
+    definition: ColumnDefinition,
+    summary_lookup: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    summary = summary_lookup.get(definition.normalized_name, {})
+    min_value = summary.get("min")
+    max_value = summary.get("max")
+    non_null_count = int(summary.get("non_null_count") or 0)
+    if min_value is None or max_value is None or non_null_count <= 0:
+        return None
+
+    if float(min_value) == float(max_value):
+        histogram_figure = go.Figure(
+            data=[
+                go.Bar(
+                    x=[format_chart_tick(float(min_value))],
+                    y=[non_null_count],
+                    marker={"color": "#7C3AED", "line": {"color": "#F8E8AF", "width": 1}},
+                )
+            ]
+        )
+        histogram_figure.update_layout(
+            title=f"Distribution of {definition.normalized_name}",
+            xaxis_title=definition.normalized_name,
+            yaxis_title="Count",
+        )
+        style_figure(histogram_figure)
+        return build_chart_payload(
+            chart_id=f"histogram-{definition.normalized_name}",
+            chart_type="histogram",
+            title=f"Histogram for {definition.normalized_name}",
+            description="Displays the full-dataset distribution with exact bin counts.",
+            figure=histogram_figure,
+        )
+
+    bin_count = min(30, max(10, min(non_null_count, 30)))
+    bin_width = (float(max_value) - float(min_value)) / bin_count
+    if bin_width <= 0:
+        return None
+
+    histogram_query = f"""
+        WITH numeric AS (
+            SELECT TRY_CAST({quote_identifier(definition.original_name)} AS DOUBLE) AS value
+            FROM dataset_source
+        ),
+        filtered AS (
+            SELECT value
+            FROM numeric
+            WHERE value IS NOT NULL
+        ),
+        bucketed AS (
+            SELECT LEAST(
+                {bin_count - 1},
+                GREATEST(
+                    0,
+                    CAST(FLOOR((value - {to_sql_number(float(min_value))}) / {to_sql_number(bin_width)}) AS BIGINT)
+                )
+            ) AS bin_index
+            FROM filtered
+        )
+        SELECT bin_index, COUNT(*) AS bin_count
+        FROM bucketed
+        GROUP BY 1
+        ORDER BY 1
+    """
+    histogram_rows = connection.execute(histogram_query).fetchall()
+    counts_by_bin = {int(row[0]): int(row[1]) for row in histogram_rows}
+    labels: list[str] = []
+    counts: list[int] = []
+    for bin_index in range(bin_count):
+        left_edge = float(min_value) + (bin_index * bin_width)
+        right_edge = float(max_value) if bin_index == bin_count - 1 else left_edge + bin_width
+        labels.append(f"{format_chart_tick(left_edge)} to {format_chart_tick(right_edge)}")
+        counts.append(counts_by_bin.get(bin_index, 0))
+
+    histogram_figure = go.Figure(
+        data=[
+            go.Bar(
+                x=labels,
+                y=counts,
+                marker={"color": "#7C3AED", "line": {"color": "#F8E8AF", "width": 1}},
+            )
+        ]
+    )
+    histogram_figure.update_layout(
+        title=f"Distribution of {definition.normalized_name}",
+        xaxis_title=definition.normalized_name,
+        yaxis_title="Count",
+    )
+    style_figure(histogram_figure)
+    return build_chart_payload(
+        chart_id=f"histogram-{definition.normalized_name}",
+        chart_type="histogram",
+        title=f"Histogram for {definition.normalized_name}",
+        description="Displays the full-dataset distribution with exact bin counts.",
+        figure=histogram_figure,
+    )
+
+
+def build_exact_box_chart(
+    connection: duckdb.DuckDBPyConnection,
+    definition: ColumnDefinition,
+    summary_lookup: dict[str, dict[str, Any]],
+    outlier_lookup: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    summary = summary_lookup.get(definition.normalized_name, {})
+    q1_value = summary.get("q1")
+    median_value = summary.get("median")
+    q3_value = summary.get("q3")
+    min_value = summary.get("min")
+    max_value = summary.get("max")
+    if None in {q1_value, median_value, q3_value, min_value, max_value}:
+        return None
+
+    lower_fence = float(min_value)
+    upper_fence = float(max_value)
+    outlier_summary = outlier_lookup.get(definition.normalized_name)
+    if outlier_summary:
+        whisker_query = f"""
+            WITH numeric AS (
+                SELECT TRY_CAST({quote_identifier(definition.original_name)} AS DOUBLE) AS value
+                FROM dataset_source
+            )
+            SELECT
+                MIN(value) FILTER (WHERE value >= {to_sql_number(float(outlier_summary["lower_bound"]))}) AS lower_fence,
+                MAX(value) FILTER (WHERE value <= {to_sql_number(float(outlier_summary["upper_bound"]))}) AS upper_fence
+            FROM numeric
+            WHERE value IS NOT NULL
+        """
+        whisker_row = connection.execute(whisker_query).fetchone()
+        if whisker_row:
+            lower_fence = float(whisker_row[0]) if whisker_row[0] is not None else lower_fence
+            upper_fence = float(whisker_row[1]) if whisker_row[1] is not None else upper_fence
+
+    box_figure = go.Figure(
+        data=[
+            go.Box(
+                name=definition.normalized_name,
+                q1=[float(q1_value)],
+                median=[float(median_value)],
+                q3=[float(q3_value)],
+                lowerfence=[lower_fence],
+                upperfence=[upper_fence],
+                boxpoints=False,
+                fillcolor="rgba(20, 184, 166, 0.16)",
+                marker={"color": "#7C3AED"},
+                line={"color": "#14B8A6"},
+            )
+        ]
+    )
+    box_figure.update_layout(title=f"Outlier view for {definition.normalized_name}")
+    style_figure(box_figure)
+    return build_chart_payload(
+        chart_id=f"box-{definition.normalized_name}",
+        chart_type="box",
+        title=f"Box plot for {definition.normalized_name}",
+        description="Uses full-dataset quartiles and whiskers for an exact outlier summary.",
+        figure=box_figure,
+    )
+
+
+def build_exact_density_chart(
+    connection: duckdb.DuckDBPyConnection,
+    x_definition: ColumnDefinition,
+    y_definition: ColumnDefinition,
+    summary_lookup: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    x_summary = summary_lookup.get(x_definition.normalized_name, {})
+    y_summary = summary_lookup.get(y_definition.normalized_name, {})
+    x_min = x_summary.get("min")
+    x_max = x_summary.get("max")
+    y_min = y_summary.get("min")
+    y_max = y_summary.get("max")
+    if None in {x_min, x_max, y_min, y_max}:
+        return None
+
+    x_min = float(x_min)
+    x_max = float(x_max)
+    y_min = float(y_min)
+    y_max = float(y_max)
+    if x_min == x_max or y_min == y_max:
+        return None
+
+    x_bin_width = (x_max - x_min) / MAX_EXACT_SCATTER_BINS
+    y_bin_width = (y_max - y_min) / MAX_EXACT_SCATTER_BINS
+    if x_bin_width <= 0 or y_bin_width <= 0:
+        return None
+
+    density_query = f"""
+        WITH points AS (
+            SELECT
+                TRY_CAST({quote_identifier(x_definition.original_name)} AS DOUBLE) AS x_value,
+                TRY_CAST({quote_identifier(y_definition.original_name)} AS DOUBLE) AS y_value
+            FROM dataset_source
+        ),
+        filtered AS (
+            SELECT x_value, y_value
+            FROM points
+            WHERE x_value IS NOT NULL AND y_value IS NOT NULL
+        ),
+        bucketed AS (
+            SELECT
+                LEAST(
+                    {MAX_EXACT_SCATTER_BINS - 1},
+                    GREATEST(
+                        0,
+                        CAST(FLOOR((x_value - {to_sql_number(x_min)}) / {to_sql_number(x_bin_width)}) AS BIGINT)
+                    )
+                ) AS x_bin,
+                LEAST(
+                    {MAX_EXACT_SCATTER_BINS - 1},
+                    GREATEST(
+                        0,
+                        CAST(FLOOR((y_value - {to_sql_number(y_min)}) / {to_sql_number(y_bin_width)}) AS BIGINT)
+                    )
+                ) AS y_bin
+            FROM filtered
+        )
+        SELECT x_bin, y_bin, COUNT(*) AS point_count
+        FROM bucketed
+        GROUP BY 1, 2
+        ORDER BY 2, 1
+    """
+    density_rows = connection.execute(density_query).fetchall()
+    if not density_rows:
+        return None
+
+    density_matrix = [
+        [0 for _ in range(MAX_EXACT_SCATTER_BINS)]
+        for _ in range(MAX_EXACT_SCATTER_BINS)
+    ]
+    for x_bin, y_bin, point_count in density_rows:
+        density_matrix[int(y_bin)][int(x_bin)] = int(point_count)
+
+    x_labels = [
+        format_chart_tick(x_min + ((index + 0.5) * x_bin_width))
+        for index in range(MAX_EXACT_SCATTER_BINS)
+    ]
+    y_labels = [
+        format_chart_tick(y_min + ((index + 0.5) * y_bin_width))
+        for index in range(MAX_EXACT_SCATTER_BINS)
+    ]
+    density_figure = go.Figure(
+        data=[
+            go.Heatmap(
+                z=density_matrix,
+                x=x_labels,
+                y=y_labels,
+                colorscale=HEATMAP_SCALE,
+                hoverongaps=False,
+            )
+        ]
+    )
+    density_figure.update_layout(
+        title=f"Density of {x_definition.normalized_name} vs {y_definition.normalized_name}",
+        xaxis_title=x_definition.normalized_name,
+        yaxis_title=y_definition.normalized_name,
+    )
+    style_figure(density_figure)
+    return build_chart_payload(
+        chart_id=f"density-{x_definition.normalized_name}-{y_definition.normalized_name}",
+        chart_type="heatmap",
+        title=f"Density map for {x_definition.normalized_name} and {y_definition.normalized_name}",
+        description="Uses exact full-dataset density counts instead of a sampled scatter.",
+        figure=density_figure,
+    )
+
+
+def build_exact_line_chart(
+    connection: duckdb.DuckDBPyConnection,
+    numeric_definition: ColumnDefinition,
+    datetime_definition: ColumnDefinition | None,
+) -> dict[str, Any] | None:
+    numeric_identifier = quote_identifier(numeric_definition.original_name)
+    if datetime_definition is not None:
+        datetime_identifier = quote_identifier(datetime_definition.original_name)
+        line_query = f"""
+            WITH grouped AS (
+                SELECT
+                    TRY_CAST({datetime_identifier} AS TIMESTAMP) AS x_value,
+                    AVG(TRY_CAST({numeric_identifier} AS DOUBLE)) AS y_value
+                FROM dataset_source
+                WHERE
+                    TRY_CAST({datetime_identifier} AS TIMESTAMP) IS NOT NULL
+                    AND TRY_CAST({numeric_identifier} AS DOUBLE) IS NOT NULL
+                GROUP BY 1
+            ),
+            bucketed AS (
+                SELECT
+                    x_value,
+                    y_value,
+                    NTILE({MAX_EXACT_CHART_POINTS}) OVER (ORDER BY x_value) AS bucket
+                FROM grouped
+            )
+            SELECT
+                MIN(x_value) AS x_value,
+                AVG(y_value) AS y_value
+            FROM bucketed
+            GROUP BY bucket
+            ORDER BY x_value
+        """
+        line_frame = connection.execute(line_query).fetchdf()
+        if line_frame.empty:
+            return None
+
+        line_figure = px.line(
+            line_frame,
+            x="x_value",
+            y="y_value",
+            markers=True,
+            title=f"{numeric_definition.normalized_name} over {datetime_definition.normalized_name}",
+            color_discrete_sequence=["#7C3AED"],
+        )
+    else:
+        line_query = f"""
+            WITH ordered AS (
+                SELECT
+                    ROW_NUMBER() OVER () AS record_index,
+                    TRY_CAST({numeric_identifier} AS DOUBLE) AS y_value
+                FROM dataset_source
+            ),
+            filtered AS (
+                SELECT
+                    record_index,
+                    y_value,
+                    NTILE({MAX_EXACT_CHART_POINTS}) OVER (ORDER BY record_index) AS bucket
+                FROM ordered
+                WHERE y_value IS NOT NULL
+            )
+            SELECT
+                MIN(record_index) AS record_index,
+                AVG(y_value) AS y_value
+            FROM filtered
+            GROUP BY bucket
+            ORDER BY record_index
+        """
+        line_frame = connection.execute(line_query).fetchdf()
+        if line_frame.empty:
+            return None
+
+        line_figure = px.line(
+            line_frame,
+            x="record_index",
+            y="y_value",
+            markers=True,
+            title=f"{numeric_definition.normalized_name} across dataset order",
+            color_discrete_sequence=["#7C3AED"],
+        )
+
+    line_figure.update_traces(
+        line={"width": 3},
+        marker={"size": 7, "color": "#F59E0B", "line": {"color": "#FFF5C3", "width": 1}},
+        fill="tozeroy",
+        fillcolor="rgba(124, 58, 237, 0.12)",
+    )
+    style_figure(line_figure)
+    return build_chart_payload(
+        chart_id=f"line-{numeric_definition.normalized_name}",
+        chart_type="line",
+        title=f"Line chart for {numeric_definition.normalized_name}",
+        description="Uses exact full-dataset aggregation for the line trend.",
+        figure=line_figure,
+    )
+
+
+def build_correlation_heatmap_chart(correlations: dict[str, Any]) -> dict[str, Any] | None:
+    if not correlations.get("available"):
+        return None
+
+    matrix = correlations.get("matrix") or []
+    columns = correlations.get("columns") or []
+    if not matrix or not columns:
+        return None
+
+    heatmap_figure = go.Figure(
+        data=[
+            go.Heatmap(
+                z=matrix,
+                x=columns,
+                y=columns,
+                colorscale=HEATMAP_SCALE,
+                zmin=-1,
+                zmax=1,
+                hoverongaps=False,
+            )
+        ]
+    )
+    heatmap_figure.update_layout(title="Correlation heatmap")
+    style_figure(heatmap_figure)
+    return build_chart_payload(
+        chart_id="heatmap-correlations",
+        chart_type="heatmap",
+        title="Correlation heatmap",
+        description="Highlights strong positive and negative relationships between numeric columns.",
+        figure=heatmap_figure,
+    )
+
+
+def generate_exact_charts_for_cache_entry(cache_entry: AnalysisCacheEntry) -> list[dict[str, Any]]:
+    payload = cache_entry.full_payload or cache_entry.preview_payload or {}
+    summary_lookup = {
+        item["column"]: item for item in payload.get("summary_statistics", [])
+    }
+    outlier_lookup = {
+        item["column"]: item for item in payload.get("outliers", [])
+    }
+
+    with managed_dataset_connection(cache_entry) as connection:
+        column_definitions = build_column_definitions_from_payload(payload, connection)
+        numeric_definitions = [item for item in column_definitions if item.inferred_kind == "numeric"]
+        datetime_definitions = [item for item in column_definitions if item.inferred_kind == "datetime"]
+        categorical_definitions = [
+            item for item in column_definitions if item.inferred_kind == "categorical"
+        ]
+
+        charts: list[dict[str, Any]] = []
+        if categorical_definitions:
+            charts.extend(build_exact_categorical_charts(connection, categorical_definitions[0]))
+
+        if numeric_definitions:
+            histogram_chart = build_exact_histogram_chart(connection, numeric_definitions[0], summary_lookup)
+            if histogram_chart:
+                charts.append(histogram_chart)
+
+            box_chart = build_exact_box_chart(
+                connection,
+                numeric_definitions[0],
+                summary_lookup,
+                outlier_lookup,
+            )
+            if box_chart:
+                charts.append(box_chart)
+
+        if len(numeric_definitions) >= 2:
+            density_chart = build_exact_density_chart(
+                connection,
+                numeric_definitions[0],
+                numeric_definitions[1],
+                summary_lookup,
+            )
+            if density_chart:
+                charts.append(density_chart)
+
+        if numeric_definitions:
+            line_chart = build_exact_line_chart(
+                connection,
+                numeric_definitions[0],
+                datetime_definitions[0] if datetime_definitions else None,
+            )
+            if line_chart:
+                charts.append(line_chart)
+
+    heatmap_chart = build_correlation_heatmap_chart(payload.get("correlations", {}))
+    if heatmap_chart:
+        charts.append(heatmap_chart)
+
+    return sanitize_for_json(charts[: settings.max_chart_count])
+
+
 def generate_charts_for_cache_entry(cache_entry: AnalysisCacheEntry) -> list[dict[str, Any]]:
+    if cache_entry.processing_mode == "large":
+        return generate_exact_charts_for_cache_entry(cache_entry)
+
     payload = cache_entry.full_payload or cache_entry.preview_payload or {}
     sample_frame = load_sample_for_cache_entry(cache_entry, limit=settings.chart_sample_rows)
     cleaned_frame, _ = clean_dataframe(sample_frame.copy())
     correlations = payload.get("correlations") or build_correlation_analysis(cleaned_frame)
     charts = generate_chart_specs(cleaned_frame, correlations)
     return sanitize_for_json(charts[: settings.max_chart_count])
-
-
 def generate_transient_preview_charts(cache_entry: AnalysisCacheEntry) -> list[dict[str, Any]]:
     sample_frame = load_sample_for_cache_entry(cache_entry, limit=settings.chart_sample_rows)
     cleaned_frame, _ = clean_dataframe(sample_frame.copy())
     correlations = (cache_entry.preview_payload or {}).get("correlations") or build_correlation_analysis(cleaned_frame)
     return sanitize_for_json(generate_chart_specs(cleaned_frame, correlations)[: settings.max_chart_count])
-
-
 def load_sample_for_cache_entry(cache_entry: AnalysisCacheEntry, *, limit: int) -> pd.DataFrame:
     parquet_path = Path(cache_entry.parquet_path) if cache_entry.parquet_path else None
     if parquet_path and parquet_path.exists():
@@ -1152,15 +1855,12 @@ def load_sample_for_cache_entry(cache_entry: AnalysisCacheEntry, *, limit: int) 
             limit=limit,
             sample=True,
         )
-
     connection = duckdb.connect()
     try:
         relation_sql = build_relation_sql_from_path(source_path, file_type=cache_entry.file_type)
         return connection.execute(f"SELECT * FROM {relation_sql} USING SAMPLE reservoir({limit} ROWS)").fetchdf()
     finally:
         connection.close()
-
-
 def load_preview_sample(
     *,
     source_path: Path,
@@ -1181,8 +1881,6 @@ def load_preview_sample(
         return connection.execute(f"SELECT * FROM {relation_sql}{sample_clause}").fetchdf()
     finally:
         connection.close()
-
-
 def load_modern_excel_preview(source_path: Path, limit: int, *, sample: bool = False) -> pd.DataFrame:
     workbook = load_workbook(source_path, read_only=True, data_only=True)
     try:
@@ -1196,15 +1894,12 @@ def load_modern_excel_preview(source_path: Path, limit: int, *, sample: bool = F
         return pd.DataFrame(preview_rows, columns=columns)
     finally:
         workbook.close()
-
-
 def load_legacy_excel_preview(source_path: Path, limit: int, *, sample: bool = False) -> pd.DataFrame:
     rows_to_skip = 0
     sampled_rows: list[list[Any]] = []
     seen_rows = 0
     columns: list[str] | None = None
     rng = random.Random(SAMPLING_RANDOM_SEED)
-
     while True:
         chunk = pd.read_excel(
             source_path,
@@ -1213,24 +1908,18 @@ def load_legacy_excel_preview(source_path: Path, limit: int, *, sample: bool = F
         )
         if chunk.empty:
             break
-
         if columns is None:
             columns = [str(column) for column in chunk.columns]
-
         chunk = chunk.reindex(columns=columns)
         row_values = [normalize_excel_row(row, len(columns)) for row in chunk.itertuples(index=False, name=None)]
         if sample:
             sampled_rows, seen_rows = apply_reservoir_sampling(sampled_rows, row_values, limit, seen_rows, rng)
         else:
             return pd.DataFrame(row_values[:limit], columns=columns)
-
         rows_to_skip += len(chunk)
         if len(chunk) < settings.excel_chunk_rows:
             break
-
     return pd.DataFrame(sampled_rows, columns=columns or [])
-
-
 def collect_excel_preview_rows(
     rows: Any,
     columns: list[str],
@@ -1245,7 +1934,6 @@ def collect_excel_preview_rows(
             if len(preview_rows) >= limit:
                 break
         return preview_rows
-
     sampled_rows: list[list[Any]] = []
     seen_rows = 0
     rng = random.Random(SAMPLING_RANDOM_SEED)
@@ -1258,15 +1946,11 @@ def collect_excel_preview_rows(
             rng,
         )
     return sampled_rows
-
-
 def normalize_excel_row(row: Any, width: int) -> list[Any]:
     padded_row = list(row[:width])
     if len(padded_row) < width:
         padded_row.extend([None] * (width - len(padded_row)))
     return padded_row
-
-
 def apply_reservoir_sampling(
     sample_rows: list[list[Any]],
     incoming_rows: list[list[Any]],
@@ -1276,20 +1960,15 @@ def apply_reservoir_sampling(
 ) -> tuple[list[list[Any]], int]:
     if limit <= 0:
         return sample_rows, seen_rows
-
     for row in incoming_rows:
         seen_rows += 1
         if len(sample_rows) < limit:
             sample_rows.append(row)
             continue
-
         replacement_index = rng.randint(1, seen_rows)
         if replacement_index <= limit:
             sample_rows[replacement_index - 1] = row
-
     return sample_rows, seen_rows
-
-
 def load_sample_frame_from_connection(
     connection: duckdb.DuckDBPyConnection,
     limit: int,
@@ -1297,38 +1976,28 @@ def load_sample_frame_from_connection(
     return connection.execute(
         f"SELECT * FROM dataset_source USING SAMPLE reservoir({limit} ROWS)"
     ).fetchdf()
-
-
 class managed_dataset_connection:
     def __init__(self, cache_entry: AnalysisCacheEntry):
         self.cache_entry = cache_entry
         self.connection: duckdb.DuckDBPyConnection | None = None
-
     def __enter__(self) -> duckdb.DuckDBPyConnection:
         self.connection = duckdb.connect()
         relation_sql = build_relation_sql_for_cache_entry(self.cache_entry)
         self.connection.execute(f"CREATE OR REPLACE TEMP VIEW dataset_source AS SELECT * FROM {relation_sql}")
         return self.connection
-
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         if self.connection is not None:
             self.connection.close()
-
-
 def build_relation_sql_for_cache_entry(cache_entry: AnalysisCacheEntry) -> str:
     if cache_entry.parquet_path:
         parquet_path = Path(cache_entry.parquet_path)
         if parquet_path.exists():
             return f"read_parquet({sql_literal(str(parquet_path))})"
-
     source_path = Path(cache_entry.storage_path)
     source_path = resolve_cache_entry_source_path(cache_entry)
     if cache_entry.file_type == "excel":
         raise ValueError("Excel datasets must be converted to Parquet before full analytics can run.")
-
     return build_relation_sql_from_path(source_path, file_type=cache_entry.file_type)
-
-
 def build_relation_sql_from_path(source_path: Path, *, file_type: str) -> str:
     literal = sql_literal(str(source_path))
     if file_type == "csv":
@@ -1336,29 +2005,19 @@ def build_relation_sql_from_path(source_path: Path, *, file_type: str) -> str:
     if file_type == "json":
         return f"read_json_auto({literal})"
     raise ValueError("Unsupported dataset source.")
-
-
 def quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
-
-
 def sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
-
-
 def missing_condition_sql(column_name: str) -> str:
     identifier = quote_identifier(column_name)
     return f"{identifier} IS NULL OR TRIM(CAST({identifier} AS VARCHAR)) = ''"
-
-
 def resolve_cache_entry_source_path(cache_entry: AnalysisCacheEntry) -> Path:
     return ensure_local_storage_copy(
         storage_path=cache_entry.storage_path,
         storage_backend=cache_entry.storage_backend,
         storage_key=cache_entry.storage_key,
     )
-
-
 def is_job_stale(cache_entry: AnalysisCacheEntry) -> bool:
     updated_at = cache_entry.updated_at
     if not updated_at:

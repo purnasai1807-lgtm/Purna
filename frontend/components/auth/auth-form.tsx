@@ -11,7 +11,7 @@ type AuthFormProps = {
 
 export function AuthForm({ initialMode = "signup" }: AuthFormProps) {
   const router = useRouter();
-  const { loginUser, signupUser } = useAuth();
+  const { loginPublicUser, loginUser, signupUser } = useAuth();
   const [mode, setMode] = useState<"login" | "signup">(initialMode);
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -36,6 +36,24 @@ export function AuthForm({ initialMode = "signup" }: AuthFormProps) {
         submissionError instanceof Error
           ? submissionError.message
           : "Authentication failed. Please try again."
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handlePublicAccess() {
+    setError("");
+    setIsSubmitting(true);
+
+    try {
+      await loginPublicUser();
+      router.push("/dashboard");
+    } catch (submissionError) {
+      setError(
+        submissionError instanceof Error
+          ? submissionError.message
+          : "Public access failed. Please try again."
       );
     } finally {
       setIsSubmitting(false);
@@ -112,7 +130,20 @@ export function AuthForm({ initialMode = "signup" }: AuthFormProps) {
           {isSubmitting ? "Please wait..." : mode === "signup" ? "Create account" : "Continue"}
         </button>
       </form>
+
+      <div className="stack" style={{ marginTop: "1rem" }}>
+        <button
+          type="button"
+          className="button button--secondary button--full"
+          onClick={handlePublicAccess}
+          disabled={isSubmitting}
+        >
+          {isSubmitting ? "Please wait..." : "Continue as public user"}
+        </button>
+        <p className="muted-copy">
+          Public access skips account creation and restores itself after browser or app restarts.
+        </p>
+      </div>
     </div>
   );
 }
-

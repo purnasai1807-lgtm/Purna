@@ -1,27 +1,20 @@
 from __future__ import annotations
-
 import re
 from collections.abc import Iterator
 from typing import IO, Any
-
 import numpy as np
 import pandas as pd
 from openpyxl import load_workbook
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 from sklearn.linear_model import LinearRegression
-
 from app.services.modeling import build_modeling_summary
 from app.services.visualization import generate_chart_specs
-
 TYPE_INFERENCE_SAMPLE_SIZE = 2000
 CORRELATION_SAMPLE_SIZE = 15000
 UPLOAD_READ_CHUNK_SIZE = 5000
-
-
 def parse_uploaded_dataframe(filename: str, upload_stream: IO[bytes]) -> pd.DataFrame:
     extension = filename.lower().rsplit(".", maxsplit=1)[-1] if "." in filename else ""
     upload_stream.seek(0)
-
     if extension == "csv":
         return read_csv_in_chunks(upload_stream)
     if extension in {"xlsx", "xlsm", "xltx", "xltm"}:

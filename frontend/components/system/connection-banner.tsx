@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 
 import { checkApiHealth } from "@/lib/api";
 
@@ -8,12 +9,24 @@ type ConnectionState = "checking" | "connected" | "offline" | "unreachable";
 const RETRY_DELAY_MS = 5000;
 
 export function ConnectionBanner() {
+  const pathname = usePathname();
   const [state, setState] = useState<ConnectionState>("checking");
   const [isRetrying, setIsRetrying] = useState(false);
   const retryTimeoutRef = useRef<number | null>(null);
   const retryConnectionRef = useRef<() => Promise<void>>(async () => undefined);
+  const shouldShowBanner =
+    pathname?.startsWith("/dashboard") ||
+    pathname?.startsWith("/analysis/") ||
+    pathname?.startsWith("/share/");
 
   useEffect(() => {
+    if (!shouldShowBanner) {
+      setState("connected");
+      setIsRetrying(false);
+      retryConnectionRef.current = async () => undefined;
+      return;
+    }
+
     let cancelled = false;
 
     function clearRetryTimeout() {
@@ -92,7 +105,7 @@ export function ConnectionBanner() {
       window.removeEventListener("online", handleOnline);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, []);
+  }, [shouldShowBanner]);
 
   async function handleRetryConnection() {
     if (!navigator.onLine) {
@@ -104,7 +117,7 @@ export function ConnectionBanner() {
     await retryConnectionRef.current();
   }
 
-  if (state === "connected") {
+  if (!shouldShowBanner || state === "connected") {
     return null;
   }
 

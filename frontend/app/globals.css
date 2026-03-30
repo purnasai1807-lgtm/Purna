@@ -882,6 +882,12 @@ main {
   line-height: 1.35;
 }
 
+.analytics-story-card p {
+  margin: 0;
+  color: rgba(52, 25, 94, 0.72);
+  line-height: 1.55;
+}
+
 .analytics-kpi-rail {
   display: grid;
   gap: 0.85rem;
