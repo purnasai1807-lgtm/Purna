@@ -7,7 +7,7 @@ import pandas as pd
 from openpyxl import load_workbook
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 from sklearn.linear_model import LinearRegression
-from app.services.modeling import build_modeling_summary
+from app.services.modeling import build_modeling_summary, build_skipped_modeling_summary
 from app.services.visualization import generate_chart_specs
 TYPE_INFERENCE_SAMPLE_SIZE = 2000
 CORRELATION_SAMPLE_SIZE = 15000
@@ -155,6 +155,7 @@ def analyze_dataframe(
     target_column: str | None = None,
     *,
     include_charts: bool = True,
+    include_modeling: bool = True,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if dataframe.empty:
@@ -162,7 +163,7 @@ def analyze_dataframe(
             "The dataset is empty after parsing. Please upload a file with records."
         )
 
-    original_dataframe = dataframe.copy()
+    original_dataframe = dataframe
     cleaned_dataframe, cleaning_summary = clean_dataframe(dataframe.copy())
     if cleaned_dataframe.empty:
         raise ValueError(
@@ -187,7 +188,14 @@ def analyze_dataframe(
     outliers = detect_outliers(cleaned_dataframe)
     trends = analyze_trends(cleaned_dataframe)
     charts = generate_chart_specs(cleaned_dataframe, correlations) if include_charts else []
-    modeling = build_modeling_summary(cleaned_dataframe, normalized_target)
+    modeling = (
+        build_modeling_summary(cleaned_dataframe, normalized_target)
+        if include_modeling
+        else build_skipped_modeling_summary(
+            "Preview mode skips baseline modeling so the first analysis loads faster.",
+            mode="preview_deferred",
+        )
+    )
     insights, recommendations = build_narrative(
         overview=overview,
         cleaning=cleaning_summary,
@@ -313,9 +321,12 @@ def infer_column_types(dataframe: pd.DataFrame) -> pd.DataFrame:
             else non_null
         )
         text_values = sampled_values.astype(str)
-        datetime_candidate = pd.to_datetime(text_values, errors="coerce")
         has_datetime_pattern = text_values.str.contains(r"[-/:T]", regex=True).mean() >= 0.5
-        if has_datetime_pattern and datetime_candidate.notna().mean() >= 0.85:
+        if has_datetime_pattern:
+            datetime_candidate = pd.to_datetime(text_values, errors="coerce")
+        else:
+            datetime_candidate = None
+        if datetime_candidate is not None and datetime_candidate.notna().mean() >= 0.85:
             dataframe[column] = pd.to_datetime(series, errors="coerce")
             continue
 

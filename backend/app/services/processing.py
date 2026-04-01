@@ -25,6 +25,7 @@ from app.services.analytics import (
     build_excel_columns,
     build_narrative,
     build_overview,
+    build_summary_statistics,
     build_section_status,
     clean_dataframe,
     normalize_column_name,
@@ -81,6 +82,30 @@ def get_preview_ready_state(processing_mode: str) -> tuple[int, str]:
     if processing_mode == "medium":
         return 30, "Chunk-based analytics are running in the background."
     return 24, "Large dataset detected. Processing in optimized mode."
+
+
+def get_preview_sample_limit(processing_mode: str) -> int:
+    if processing_mode == "medium":
+        return settings.medium_preview_sample_rows
+    if processing_mode == "large":
+        return settings.large_preview_sample_rows
+    return settings.preview_sample_rows
+
+
+def get_analytics_sample_limit(processing_mode: str) -> int:
+    if processing_mode == "medium":
+        return settings.medium_analytics_sample_rows
+    if processing_mode == "large":
+        return settings.large_analytics_sample_rows
+    return settings.analytics_sample_rows
+
+
+def get_chart_sample_limit(processing_mode: str) -> int:
+    if processing_mode == "medium":
+        return settings.medium_chart_sample_rows
+    if processing_mode == "large":
+        return settings.large_chart_sample_rows
+    return settings.chart_sample_rows
 def find_cache_entry(
     db: Session,
     *,
@@ -270,7 +295,7 @@ def build_preview_payload(
         source_path=stored_upload.storage_path,
         file_type=stored_upload.file_type,
         extension=stored_upload.extension,
-        limit=settings.preview_sample_rows,
+        limit=get_preview_sample_limit(stored_upload.processing_mode),
         sample=stored_upload.processing_mode == "large",
     )
     if preview_frame.empty:
@@ -282,6 +307,7 @@ def build_preview_payload(
         source_type="upload",
         target_column=target_column,
         include_charts=False,
+        include_modeling=False,
         metadata={
             "is_preview": stored_upload.processing_mode != "small",
             "processing_mode": stored_upload.processing_mode,
@@ -360,6 +386,7 @@ def build_large_sample_payload(
         cleaning_summary,
         normalized_target,
     )
+    sample_summary_statistics = build_summary_statistics(cleaned_frame)
 
     return {
         "dataset_name": dataset_name,
@@ -367,6 +394,7 @@ def build_large_sample_payload(
         "target_column": normalized_target,
         "overview": overview,
         "cleaning": cleaning_summary,
+        "summary_statistics": sample_summary_statistics,
         "trends": analyze_trends(cleaned_frame),
         "modeling": build_modeling_summary(cleaned_frame, normalized_target),
         "metadata": {
@@ -485,7 +513,7 @@ def build_full_payload(cache_entry: AnalysisCacheEntry) -> dict[str, Any]:
     with managed_dataset_connection(cache_entry) as connection:
         sample_frame = load_sample_frame_from_connection(
             connection,
-            settings.analytics_sample_rows,
+            get_analytics_sample_limit(cache_entry.processing_mode),
         )
         sample_payload = build_large_sample_payload(
             sample_frame=sample_frame,
@@ -507,6 +535,7 @@ def build_full_payload(cache_entry: AnalysisCacheEntry) -> dict[str, Any]:
             row_count=row_count,
             column_definitions=active_definitions,
             column_profiles=active_columns,
+            sample_payload=sample_payload,
         )
         correlations = build_large_correlations(connection, active_definitions)
         outliers = build_large_outliers(connection, active_definitions)
@@ -638,7 +667,7 @@ def build_column_profiles(
                     f"AS missing_count__{index}"
                 ),
                 (
-                    "COUNT(DISTINCT CASE WHEN "
+                    "APPROX_COUNT_DISTINCT(CASE WHEN "
                     f"{missing_condition_sql(definition.original_name)} THEN NULL "
                     f"ELSE {identifier} END) AS unique_values__{index}"
                 ),
@@ -787,10 +816,14 @@ def build_large_summary_statistics(
     row_count: int,
     column_definitions: list[ColumnDefinition],
     column_profiles: list[dict[str, Any]],
+    sample_payload: dict[str, Any],
 ) -> list[dict[str, Any]]:
     profile_lookup = {profile["column"]: profile for profile in column_profiles}
     numeric_summary_lookup = build_large_numeric_summary_lookup(connection, column_definitions)
     datetime_summary_lookup = build_large_datetime_summary_lookup(connection, column_definitions)
+    sample_summary_lookup = {
+        item["column"]: item for item in sample_payload.get("summary_statistics", [])
+    }
     summary_statistics: list[dict[str, Any]] = []
 
     for definition in column_definitions:
@@ -801,26 +834,19 @@ def build_large_summary_statistics(
             "non_null_count": int(max(row_count - profile["missing_count"], 0)),
             "unique_values": profile["unique_values"],
         }
-        identifier = quote_identifier(definition.original_name)
 
         if definition.inferred_kind == "numeric":
             base_stats.update(numeric_summary_lookup.get(definition.normalized_name, {}))
         elif definition.inferred_kind == "datetime":
             base_stats.update(datetime_summary_lookup.get(definition.normalized_name, {}))
         else:
-            top_value_query = f"""
-                SELECT CAST({identifier} AS VARCHAR) AS value, COUNT(*) AS frequency
-                FROM dataset_source
-                WHERE NOT ({missing_condition_sql(definition.original_name)})
-                GROUP BY 1
-                ORDER BY frequency DESC, value ASC
-                LIMIT 1
-            """
-            top_row = connection.execute(top_value_query).fetchone()
             base_stats.update(
                 {
-                    "top_value": top_row[0] if top_row else None,
-                    "top_frequency": int(top_row[1]) if top_row else 0,
+                    "top_value": sample_summary_lookup.get(definition.normalized_name, {}).get("top_value"),
+                    "top_frequency": int(
+                        sample_summary_lookup.get(definition.normalized_name, {}).get("top_frequency")
+                        or 0
+                    ),
                 }
             )
 
@@ -839,17 +865,24 @@ def build_large_correlations(
     if len(numeric_columns) < 2:
         return {"available": False, "columns": [], "matrix": [], "strongest_pairs": []}
 
+    typed_columns = [
+        f"TRY_CAST({quote_identifier(definition.original_name)} AS DOUBLE) AS value__{index}"
+        for index, definition in enumerate(numeric_columns)
+    ]
     correlation_expressions: list[str] = []
-    for left_index, left_definition in enumerate(numeric_columns):
-        left_identifier = quote_identifier(left_definition.original_name)
-        for right_index, right_definition in enumerate(numeric_columns[left_index + 1 :], start=left_index + 1):
-            right_identifier = quote_identifier(right_definition.original_name)
+    for left_index, _left_definition in enumerate(numeric_columns):
+        for right_index, _right_definition in enumerate(numeric_columns[left_index + 1 :], start=left_index + 1):
             correlation_expressions.append(
-                f"CORR(TRY_CAST({left_identifier} AS DOUBLE), TRY_CAST({right_identifier} AS DOUBLE)) AS corr_{left_index}_{right_index}"
+                f"CORR(value__{left_index}, value__{right_index}) AS corr_{left_index}_{right_index}"
             )
 
     correlation_row = connection.execute(
-        f"SELECT {', '.join(correlation_expressions)} FROM dataset_source"
+        (
+            "WITH typed AS ("
+            f"SELECT {', '.join(typed_columns)} FROM dataset_source"
+            ") "
+            f"SELECT {', '.join(correlation_expressions)} FROM typed"
+        )
     ).fetchone()
     correlation_values = list(correlation_row) if correlation_row else []
     matrix = [
@@ -1824,13 +1857,13 @@ def generate_charts_for_cache_entry(cache_entry: AnalysisCacheEntry) -> list[dic
         return generate_exact_charts_for_cache_entry(cache_entry)
 
     payload = cache_entry.full_payload or cache_entry.preview_payload or {}
-    sample_frame = load_sample_for_cache_entry(cache_entry, limit=settings.chart_sample_rows)
+    sample_frame = load_sample_for_cache_entry(cache_entry, limit=get_chart_sample_limit(cache_entry.processing_mode))
     cleaned_frame, _ = clean_dataframe(sample_frame.copy())
     correlations = payload.get("correlations") or build_correlation_analysis(cleaned_frame)
     charts = generate_chart_specs(cleaned_frame, correlations)
     return sanitize_for_json(charts[: settings.max_chart_count])
 def generate_transient_preview_charts(cache_entry: AnalysisCacheEntry) -> list[dict[str, Any]]:
-    sample_frame = load_sample_for_cache_entry(cache_entry, limit=settings.chart_sample_rows)
+    sample_frame = load_sample_for_cache_entry(cache_entry, limit=get_chart_sample_limit(cache_entry.processing_mode))
     cleaned_frame, _ = clean_dataframe(sample_frame.copy())
     correlations = (cache_entry.preview_payload or {}).get("correlations") or build_correlation_analysis(cleaned_frame)
     return sanitize_for_json(generate_chart_specs(cleaned_frame, correlations)[: settings.max_chart_count])

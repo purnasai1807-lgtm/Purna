@@ -3,14 +3,16 @@
 import Link from "next/link";
 import { useState } from "react";
 
+import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import type { HistoryItem } from "@/lib/types";
 import { buildShareUrl, copyToClipboard, formatBytes, formatDate, formatStatus } from "@/lib/utils";
 
 type ReportHistoryProps = {
   items: HistoryItem[];
+  isLoading?: boolean;
 };
 
-export function ReportHistory({ items }: ReportHistoryProps) {
+export function ReportHistory({ items, isLoading = false }: ReportHistoryProps) {
   const [copiedReportId, setCopiedReportId] = useState<string | null>(null);
 
   async function handleCopy(report: HistoryItem) {
@@ -86,6 +88,10 @@ export function ReportHistory({ items }: ReportHistoryProps) {
               </article>
             );
           })}
+        </div>
+      ) : isLoading ? (
+        <div className="empty-state">
+          <LoadingSpinner label="Loading saved reports..." />
         </div>
       ) : (
         <div className="empty-state">

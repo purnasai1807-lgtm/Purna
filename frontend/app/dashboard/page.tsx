@@ -9,14 +9,16 @@ import { ReportHistory } from "@/components/dashboard/report-history";
 import { useAuth } from "@/components/providers/auth-provider";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { getHistory } from "@/lib/api";
+import { readCachedHistory, writeCachedHistory, writeCachedReport } from "@/lib/client-cache";
 import type { HistoryItem, ReportDetail } from "@/lib/types";
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { user, token, isLoading } = useAuth();
+  const { user, token, authMode, isLoading } = useAuth();
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [isFetching, setIsFetching] = useState(true);
   const [error, setError] = useState("");
+  const cacheScope = `${authMode ?? "unknown"}:${user?.id ?? "anonymous"}`;
 
   useEffect(() => {
     if (!isLoading && !token) {
@@ -28,6 +30,11 @@ export default function DashboardPage() {
     if (!token) {
       setIsFetching(false);
       return;
+    }
+
+    const cachedHistory = readCachedHistory(cacheScope);
+    if (cachedHistory.length) {
+      setHistory(cachedHistory);
     }
 
     const currentToken = token;
@@ -45,6 +52,7 @@ export default function DashboardPage() {
           return;
         }
         setHistory(items);
+        writeCachedHistory(cacheScope, items);
         setError("");
 
         if (items.some((item) => !["completed", "failed"].includes(item.status))) {
@@ -74,16 +82,21 @@ export default function DashboardPage() {
         window.clearTimeout(timeoutId);
       }
     };
-  }, [token]);
+  }, [cacheScope, token]);
 
   function handleCreated(report: ReportDetail) {
-    setHistory((currentHistory) => [report, ...currentHistory]);
+    setHistory((currentHistory) => {
+      const nextHistory = [report, ...currentHistory.filter((item) => item.id !== report.id)];
+      writeCachedHistory(cacheScope, nextHistory);
+      return nextHistory;
+    });
+    writeCachedReport(cacheScope, report);
     startTransition(() => {
       router.push(`/analysis/${report.id}`);
     });
   }
 
-  if (isLoading || (token && isFetching && history.length === 0)) {
+  if (isLoading && !token) {
     return (
       <main className="page-shell page-shell--centered">
         <LoadingSpinner label="Loading your analytics workspace..." />
@@ -132,7 +145,7 @@ export default function DashboardPage() {
           <ManualEntryCard token={token} onCreated={handleCreated} />
         </section>
 
-        <ReportHistory items={history} />
+        <ReportHistory items={history} isLoading={isFetching} />
       </div>
     </main>
   );

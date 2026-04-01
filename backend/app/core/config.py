@@ -27,8 +27,14 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = 500
     upload_chunk_size_bytes: int = 8 * 1024 * 1024
     preview_sample_rows: int = 10000
+    medium_preview_sample_rows: int = 3000
+    large_preview_sample_rows: int = 1500
     analytics_sample_rows: int = 20000
+    medium_analytics_sample_rows: int = 8000
+    large_analytics_sample_rows: int = 3000
     chart_sample_rows: int = 5000
+    medium_chart_sample_rows: int = 3000
+    large_chart_sample_rows: int = 1500
     small_file_threshold_mb: int = 10
     medium_file_threshold_mb: int = 100
     small_excel_threshold_mb: int = 10

@@ -133,7 +133,15 @@ def create_upload_session(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if request.file_size_bytes > settings.max_upload_size_bytes:\n        raise HTTPException(\n            status_code=413,\n            detail=(\n                f"Large file {settings.max_upload_size_mb}MB+ (limit 500MB). "\n                "Upload accepted - poll session status."\n            ),\n            headers={"Retry-After": "60"},\n        )
+    if request.file_size_bytes > settings.max_upload_size_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Large file {settings.max_upload_size_mb}MB+ (limit 500MB). "
+                "Upload accepted - poll session status."
+            ),
+            headers={"Retry-After": "60"},
+        )
 
     resolved_dataset_name = request.dataset_name or Path(request.filename).stem or "Dataset"
     normalized_target = normalize_column_name(request.target_column) if request.target_column else None

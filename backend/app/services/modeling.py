@@ -28,11 +28,21 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-MAX_MODELING_ROWS = 20000
-MAX_CLUSTERING_ROWS = 10000
+MAX_MODELING_ROWS = 5000
+MAX_CLUSTERING_ROWS = 3000
 MAX_CLASSIFICATION_CLASSES = 40
 MAX_CLASSIFICATION_CLASS_RATIO = 0.08
 RANDOM_STATE = 42
+MAX_CLUSTER_SEARCH = 6
+
+
+def build_skipped_modeling_summary(reason: str, *, mode: str = "skipped") -> dict[str, Any]:
+    return {
+        "status": "skipped",
+        "mode": mode,
+        "suggestions": [],
+        "reason": reason,
+    }
 
 
 def build_one_hot_encoder() -> OneHotEncoder:
@@ -48,39 +58,25 @@ def build_modeling_summary(
 ) -> dict[str, Any]:
     prepared_frame = prepare_modeling_frame(dataframe)
     if prepared_frame.shape[0] < 8:
-        return {
-            "status": "skipped",
-            "mode": "insufficient_data",
-            "suggestions": [],
-            "reason": (
-                "At least 8 records are recommended before training a baseline "
-                "machine learning model."
-            ),
-        }
+        return build_skipped_modeling_summary(
+            "At least 8 records are recommended before training a baseline machine learning model.",
+            mode="insufficient_data",
+        )
 
     if target_column:
         if target_column not in prepared_frame.columns:
-            return {
-                "status": "skipped",
-                "mode": "target_missing",
-                "suggestions": [],
-                "reason": (
-                    f"Target column '{target_column}' is not available after cleaning."
-                ),
-            }
+            return build_skipped_modeling_summary(
+                f"Target column '{target_column}' is not available after cleaning.",
+                mode="target_missing",
+            )
 
         target_series = prepared_frame[target_column]
         features = prepared_frame.drop(columns=[target_column])
         if features.empty:
-            return {
-                "status": "skipped",
-                "mode": "missing_features",
-                "suggestions": [],
-                "reason": (
-                    "The dataset needs at least one feature column in addition to "
-                    "the target."
-                ),
-            }
+            return build_skipped_modeling_summary(
+                "The dataset needs at least one feature column in addition to the target.",
+                mode="missing_features",
+            )
 
         if infer_target_mode(target_series) == "regression":
             return run_regression_workflow(features, target_series, target_column)
@@ -179,10 +175,10 @@ def run_regression_workflow(
     sampled_features, sampled_target = sample_rows(features, target)
     preprocessor, _, _ = build_preprocessor(features)
     model = RandomForestRegressor(
-        n_estimators=120,
-        max_depth=18,
+        n_estimators=48,
+        max_depth=12,
         random_state=RANDOM_STATE,
-        n_jobs=1,
+        n_jobs=-1,
     )
     pipeline = Pipeline([("preprocess", preprocessor), ("model", model)])
     x_train, x_test, y_train, y_test = train_test_split(
@@ -196,16 +192,12 @@ def run_regression_workflow(
         pipeline.fit(x_train, y_train)
         predictions = pipeline.predict(x_test)
     except MemoryError:
-        return {
-            "status": "skipped",
-            "mode": "regression",
-            "target_column": target_column,
-            "suggestions": [],
-            "reason": (
-                "This dataset is too large for in-request regression modeling. "
-                "The analysis report was generated without a trained model."
-            ),
-        }
+        result = build_skipped_modeling_summary(
+            "This dataset is too large for in-request regression modeling. The analysis report was generated without a trained model.",
+            mode="regression",
+        )
+        result["target_column"] = target_column
+        return result
 
     metrics = {
         "rmse": round(float(math.sqrt(mean_squared_error(y_test, predictions))), 4),
@@ -252,12 +244,10 @@ def run_classification_workflow(
     target_column: str,
 ) -> dict[str, Any]:
     if target.nunique(dropna=True) < 2:
-        return {
-            "status": "skipped",
-            "mode": "classification",
-            "suggestions": [],
-            "reason": "Classification needs at least two distinct target classes.",
-        }
+        return build_skipped_modeling_summary(
+            "Classification needs at least two distinct target classes.",
+            mode="classification",
+        )
 
     target_as_text = target.astype(str)
     unique_classes = int(target_as_text.nunique())
@@ -266,26 +256,21 @@ def run_classification_workflow(
         unique_classes > MAX_CLASSIFICATION_CLASSES
         or class_ratio > MAX_CLASSIFICATION_CLASS_RATIO
     ):
-        return {
-            "status": "skipped",
-            "mode": "classification",
-            "target_column": target_column,
-            "suggestions": [],
-            "reason": (
-                "The selected target has too many distinct classes for a stable "
-                "baseline classifier. Choose a simpler categorical target or leave "
-                "the target blank."
-            ),
-        }
+        result = build_skipped_modeling_summary(
+            "The selected target has too many distinct classes for a stable baseline classifier. Choose a simpler categorical target or leave the target blank.",
+            mode="classification",
+        )
+        result["target_column"] = target_column
+        return result
 
     sampled_features, sampled_target = sample_rows(features, target_as_text)
     preprocessor, _, _ = build_preprocessor(sampled_features)
     model = RandomForestClassifier(
-        n_estimators=120,
-        max_depth=18,
+        n_estimators=48,
+        max_depth=12,
         random_state=RANDOM_STATE,
         class_weight="balanced",
-        n_jobs=1,
+        n_jobs=-1,
     )
     pipeline = Pipeline([("preprocess", preprocessor), ("model", model)])
     test_size = 0.2
@@ -307,16 +292,12 @@ def run_classification_workflow(
         pipeline.fit(x_train, y_train)
         predictions = pipeline.predict(x_test)
     except MemoryError:
-        return {
-            "status": "skipped",
-            "mode": "classification",
-            "target_column": target_column,
-            "suggestions": [],
-            "reason": (
-                "This dataset is too large for in-request classification modeling. "
-                "The analysis report was generated without a trained classifier."
-            ),
-        }
+        result = build_skipped_modeling_summary(
+            "This dataset is too large for in-request classification modeling. The analysis report was generated without a trained classifier.",
+            mode="classification",
+        )
+        result["target_column"] = target_column
+        return result
 
     metrics = {
         "accuracy": round(float(accuracy_score(y_test, predictions)), 4),
@@ -396,26 +377,19 @@ def run_clustering_workflow(dataframe: pd.DataFrame) -> dict[str, Any]:
     try:
         preprocessor, _, _ = build_preprocessor(clustering_frame)
     except ValueError as exc:
-        return {
-            "status": "skipped",
-            "mode": "clustering",
-            "suggestions": [],
-            "reason": str(exc),
-        }
+        return build_skipped_modeling_summary(str(exc), mode="clustering")
 
     transformed = preprocessor.fit_transform(clustering_frame)
     if len(clustering_frame) < 5:
-        return {
-            "status": "skipped",
-            "mode": "clustering",
-            "suggestions": [],
-            "reason": "Clustering works best once you have at least five records.",
-        }
+        return build_skipped_modeling_summary(
+            "Clustering works best once you have at least five records.",
+            mode="clustering",
+        )
 
     best_score = -1.0
     best_cluster_count = None
     best_labels = None
-    max_clusters = min(8, len(clustering_frame) - 1)
+    max_clusters = min(MAX_CLUSTER_SEARCH, len(clustering_frame) - 1)
     for cluster_count in range(2, max_clusters + 1):
         candidate_model = KMeans(
             n_clusters=cluster_count,
@@ -434,10 +408,10 @@ def run_clustering_workflow(dataframe: pd.DataFrame) -> dict[str, Any]:
 
     if best_cluster_count is None or best_labels is None:
         return {
-            "status": "skipped",
-            "mode": "clustering",
-            "suggestions": [],
-            "reason": "The dataset does not separate into meaningful clusters yet.",
+            **build_skipped_modeling_summary(
+                "The dataset does not separate into meaningful clusters yet.",
+                mode="clustering",
+            ),
         }
 
     cluster_sizes = pd.Series(best_labels).value_counts().sort_index().to_dict()

@@ -7,15 +7,17 @@ import { AnalysisDashboard } from "@/components/analysis/analysis-dashboard";
 import { useAuth } from "@/components/providers/auth-provider";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { getJobStatus, getReport } from "@/lib/api";
+import { readCachedReport, writeCachedReport } from "@/lib/client-cache";
 import type { ReportDetail } from "@/lib/types";
 
 export default function AnalysisPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
-  const { token, isLoading } = useAuth();
+  const { token, user, authMode, isLoading } = useAuth();
   const [report, setReport] = useState<ReportDetail | null>(null);
   const [error, setError] = useState("");
   const [isFetching, setIsFetching] = useState(true);
+  const cacheScope = `${authMode ?? "unknown"}:${user?.id ?? "anonymous"}`;
 
   useEffect(() => {
     if (!isLoading && !token) {
@@ -31,6 +33,11 @@ export default function AnalysisPage() {
 
     const currentToken = token;
     const reportId = params.id;
+    const cachedReport = readCachedReport(cacheScope, reportId);
+    if (cachedReport) {
+      setReport(cachedReport);
+      setIsFetching(false);
+    }
     let isCancelled = false;
     let timeoutId: number | undefined;
 
@@ -46,6 +53,7 @@ export default function AnalysisPage() {
         }
 
         setReport(nextReport);
+        writeCachedReport(cacheScope, nextReport);
         setError("");
 
         if (!["completed", "failed"].includes(nextReport.status)) {
@@ -109,7 +117,7 @@ export default function AnalysisPage() {
       }
     }
 
-    void loadReport(true);
+    void loadReport(!cachedReport);
 
     return () => {
       isCancelled = true;
@@ -117,9 +125,15 @@ export default function AnalysisPage() {
         window.clearTimeout(timeoutId);
       }
     };
-  }, [params?.id, token]);
+  }, [cacheScope, params?.id, token]);
 
-  if (isLoading || isFetching) {
+  useEffect(() => {
+    if (report) {
+      writeCachedReport(cacheScope, report);
+    }
+  }, [cacheScope, report]);
+
+  if ((isLoading && !token) || (isFetching && !report)) {
     return (
       <main className="page-shell page-shell--centered">
         <LoadingSpinner label="Loading analysis report..." />

@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import { ApiError, getCurrentUser, login, loginPublicUser as requestPublicLogin, signup } from "@/lib/api";
+import { clearCachedAuthState, readCachedAuthState, writeCachedAuthState } from "@/lib/client-cache";
 import type { AuthMode, LoginPayload, SignupPayload, User } from "@/lib/types";
 
 type AuthContextValue = {
@@ -23,7 +24,6 @@ type AuthContextValue = {
   logoutUser: () => void;
 };
 
-const STORAGE_KEY = "auto-analytics-ai-auth";
 const PUBLIC_AUTH_MODE: AuthMode = "public";
 const ACCOUNT_AUTH_MODE: AuthMode = "account";
 
@@ -39,35 +39,31 @@ export function AuthProvider({ children }: PropsWithChildren) {
     setToken(null);
     setUser(null);
     setAuthMode(null);
-    window.localStorage.removeItem(STORAGE_KEY);
+    clearCachedAuthState();
   }
 
-  function persistAuthState(nextToken: string, nextMode: AuthMode) {
+  function persistAuthState(nextToken: string, nextMode: AuthMode, nextUser: User | null) {
     setToken(nextToken);
     setAuthMode(nextMode);
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ token: nextToken, mode: nextMode })
-    );
+    setUser(nextUser);
+    writeCachedAuthState({ token: nextToken, mode: nextMode, user: nextUser });
   }
 
   async function restorePublicUser() {
     const response = await requestPublicLogin();
-    persistAuthState(response.access_token, PUBLIC_AUTH_MODE);
-    setUser(response.user);
+    persistAuthState(response.access_token, PUBLIC_AUTH_MODE, response.user);
   }
 
   useEffect(() => {
-    const rawState = window.localStorage.getItem(STORAGE_KEY);
-    if (!rawState) {
+    const cachedState = readCachedAuthState();
+    if (!cachedState) {
       setIsLoading(false);
       return;
     }
 
     try {
-      const parsed = JSON.parse(rawState) as { token?: string; mode?: AuthMode };
-      const storedMode = parsed.mode === PUBLIC_AUTH_MODE ? PUBLIC_AUTH_MODE : ACCOUNT_AUTH_MODE;
-      if (!parsed.token) {
+      const storedMode = cachedState.mode === PUBLIC_AUTH_MODE ? PUBLIC_AUTH_MODE : ACCOUNT_AUTH_MODE;
+      if (!cachedState.token) {
         if (storedMode === PUBLIC_AUTH_MODE) {
           restorePublicUser()
             .catch(() => {
@@ -82,12 +78,19 @@ export function AuthProvider({ children }: PropsWithChildren) {
         return;
       }
 
-      setToken(parsed.token);
+      setToken(cachedState.token);
       setAuthMode(storedMode);
+      setUser(cachedState.user ?? null);
+      setIsLoading(false);
 
-      getCurrentUser(parsed.token)
+      getCurrentUser(cachedState.token)
         .then((currentUser) => {
           setUser(currentUser);
+          writeCachedAuthState({
+            token: cachedState.token!,
+            mode: storedMode,
+            user: currentUser
+          });
         })
         .catch(async (error) => {
           if (!(error instanceof ApiError) || ![401, 403].includes(error.status ?? 0)) {
@@ -104,8 +107,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
           }
 
           clearAuthState();
-        })
-        .finally(() => setIsLoading(false));
+        });
     } catch {
       clearAuthState();
       setIsLoading(false);
@@ -114,14 +116,12 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   async function loginUser(payload: LoginPayload) {
     const response = await login(payload);
-    setUser(response.user);
-    persistAuthState(response.access_token, ACCOUNT_AUTH_MODE);
+    persistAuthState(response.access_token, ACCOUNT_AUTH_MODE, response.user);
   }
 
   async function signupUser(payload: SignupPayload) {
     const response = await signup(payload);
-    setUser(response.user);
-    persistAuthState(response.access_token, ACCOUNT_AUTH_MODE);
+    persistAuthState(response.access_token, ACCOUNT_AUTH_MODE, response.user);
   }
 
   async function loginPublicUser() {
