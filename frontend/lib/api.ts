@@ -86,8 +86,28 @@ const API_ROOT_URL = getApiRootUrl(API_BASE_URL);
 const DIRECT_UPLOAD_API_BASE_URL = resolveDirectUploadApiBaseUrl();
 const DIRECT_UPLOAD_API_ROOT_URL = getApiRootUrl(DIRECT_UPLOAD_API_BASE_URL);
 const DIRECT_UPLOAD_REQUIRES_DIRECT_BACKEND = DIRECT_UPLOAD_API_BASE_URL === INTERNAL_PROXY_API_BASE_URL;
+const DIRECT_UPLOAD_LOCAL_HOST_PATTERN =
+  /^(localhost|127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})$/;
+
+function isLocalDirectBackendUrl(value: string): boolean {
+  if (!/^https?:\/\//i.test(value)) {
+    return false;
+  }
+
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return DIRECT_UPLOAD_LOCAL_HOST_PATTERN.test(hostname);
+  } catch {
+    return false;
+  }
+}
+
+const DIRECT_UPLOAD_IS_LOCAL_BACKEND = isLocalDirectBackendUrl(DIRECT_UPLOAD_API_ROOT_URL);
 const DIRECT_STORAGE_UPLOADS_ENABLED = (() => {
   const explicitValue = process.env.NEXT_PUBLIC_USE_DIRECT_STORAGE_UPLOADS?.trim().toLowerCase();
+  if (DIRECT_UPLOAD_IS_LOCAL_BACKEND) {
+    return false;
+  }
   if (explicitValue === "true") {
     return true;
   }
@@ -97,6 +117,10 @@ const DIRECT_STORAGE_UPLOADS_ENABLED = (() => {
   return /^https:\/\//.test(DIRECT_UPLOAD_API_ROOT_URL);
 })();
 const PENDING_UPLOAD_STORAGE_KEY = "auto_analytics_pending_upload_session";
+const HEALTH_CHECK_CACHE_TTL_MS = 20_000;
+
+let lastSuccessfulWarmAt = 0;
+let inFlightWarmRequest: Promise<void> | null = null;
 
 type RequestOptions = {
   method?: string;
@@ -308,11 +332,28 @@ function wait(ms: number): Promise<void> {
 }
 
 async function warmAnalyticsService(): Promise<void> {
-  await fetchResponse("/health", {
+  const now = Date.now();
+  if (now - lastSuccessfulWarmAt < HEALTH_CHECK_CACHE_TTL_MS) {
+    return;
+  }
+
+  if (inFlightWarmRequest) {
+    return inFlightWarmRequest;
+  }
+
+  inFlightWarmRequest = fetchResponse("/health", {
     baseUrl: DIRECT_UPLOAD_API_ROOT_URL,
-    retries: 2,
-    timeoutMs: 45_000
-  });
+    retries: DIRECT_UPLOAD_IS_LOCAL_BACKEND ? 0 : 2,
+    timeoutMs: DIRECT_UPLOAD_IS_LOCAL_BACKEND ? 5_000 : 45_000
+  })
+    .then(() => {
+      lastSuccessfulWarmAt = Date.now();
+    })
+    .finally(() => {
+      inFlightWarmRequest = null;
+    });
+
+  return inFlightWarmRequest;
 }
 
 function shouldRetryUpload(error: unknown): boolean {
@@ -336,6 +377,19 @@ function shouldRetryUploadSessionFlow(error: unknown): boolean {
     error.code === "NETWORK_ERROR" ||
     error.code === "TIMEOUT" ||
     [502, 503, 504].includes(error.status ?? 0)
+  );
+}
+
+function shouldFallbackToDirectUpload(error: unknown): boolean {
+  if (!(error instanceof ApiError)) {
+    return false;
+  }
+
+  const normalizedMessage = error.message.trim().toLowerCase();
+  return (
+    error.status === 400 &&
+    (normalizedMessage.includes("s3-compatible storage") ||
+      normalizedMessage.includes("direct backend upload endpoint"))
   );
 }
 
@@ -843,7 +897,17 @@ export async function uploadDataset(
 
   if (DIRECT_STORAGE_UPLOADS_ENABLED) {
     notifyUploadStatus(input, "Preparing upload...", 5);
-    const uploadSession = await createUploadSession(file, token, input);
+    let uploadSession: UploadSession;
+    try {
+      uploadSession = await createUploadSession(file, token, input);
+    } catch (error) {
+      if (!shouldFallbackToDirectUpload(error)) {
+        throw error;
+      }
+
+      notifyUploadStatus(input, "Local upload mode detected. Switching to direct upload...", 8);
+      return uploadWithXhr(file, token, input, DIRECT_UPLOAD_API_BASE_URL);
+    }
     const pendingRecord: PendingUploadSessionRecord = {
       uploadId: uploadSession.upload_id,
       datasetName: input.datasetName,
