@@ -86,6 +86,8 @@ const API_ROOT_URL = getApiRootUrl(API_BASE_URL);
 const DIRECT_UPLOAD_API_BASE_URL = resolveDirectUploadApiBaseUrl();
 const DIRECT_UPLOAD_API_ROOT_URL = getApiRootUrl(DIRECT_UPLOAD_API_BASE_URL);
 const DIRECT_UPLOAD_REQUIRES_DIRECT_BACKEND = DIRECT_UPLOAD_API_BASE_URL === INTERNAL_PROXY_API_BASE_URL;
+const DIRECT_UPLOAD_PROXY_FALLBACK_AVAILABLE =
+  DIRECT_UPLOAD_API_BASE_URL !== INTERNAL_PROXY_API_BASE_URL;
 const DIRECT_UPLOAD_LOCAL_HOST_PATTERN =
   /^(localhost|127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[0-1])(?:\.\d{1,3}){2})$/;
 
@@ -354,6 +356,16 @@ async function warmAnalyticsService(): Promise<void> {
     });
 
   return inFlightWarmRequest;
+}
+
+async function warmAnalyticsServiceForUpload(): Promise<void> {
+  try {
+    await warmAnalyticsService();
+  } catch (error) {
+    if (!DIRECT_UPLOAD_PROXY_FALLBACK_AVAILABLE) {
+      throw error;
+    }
+  }
 }
 
 function shouldRetryUpload(error: unknown): boolean {
@@ -856,6 +868,42 @@ async function uploadWithXhr(
   });
 }
 
+async function uploadWithRecovery(
+  file: File,
+  token: string,
+  input: UploadDatasetInput
+): Promise<ReportDetail> {
+  const directBaseUrl = DIRECT_UPLOAD_REQUIRES_DIRECT_BACKEND
+    ? INTERNAL_PROXY_API_BASE_URL
+    : DIRECT_UPLOAD_API_BASE_URL;
+
+  try {
+    return await uploadWithXhr(file, token, input, directBaseUrl);
+  } catch (error) {
+    if (!shouldRetryUpload(error)) {
+      throw error;
+    }
+
+    await wait(2_000);
+    await warmAnalyticsServiceForUpload();
+
+    try {
+      return await uploadWithXhr(file, token, input, directBaseUrl);
+    } catch (retryError) {
+      if (!shouldRetryUpload(retryError) || !DIRECT_UPLOAD_PROXY_FALLBACK_AVAILABLE) {
+        throw retryError;
+      }
+
+      notifyUploadStatus(
+        input,
+        "Direct backend is still waking up. Routing upload through the app server...",
+        6
+      );
+      return uploadWithXhr(file, token, input, INTERNAL_PROXY_API_BASE_URL);
+    }
+  }
+}
+
 export function signup(payload: SignupPayload): Promise<AuthResponse> {
   return request<AuthResponse>("/auth/signup", {
     method: "POST",
@@ -888,14 +936,7 @@ export async function uploadDataset(
   token: string,
   input: UploadDatasetInput
 ): Promise<ReportDetail> {
-  if (DIRECT_UPLOAD_REQUIRES_DIRECT_BACKEND) {
-    throw new ApiError(
-      "Direct backend uploads are required for file analysis. Configure NEXT_PUBLIC_DIRECT_BACKEND_API_URL to point at the FastAPI service.",
-      { code: "UPLOAD_PROXY_DISABLED" }
-    );
-  }
-
-  await warmAnalyticsService();
+  await warmAnalyticsServiceForUpload();
 
   if (DIRECT_STORAGE_UPLOADS_ENABLED) {
     notifyUploadStatus(input, "Preparing upload...", 5);
@@ -908,7 +949,7 @@ export async function uploadDataset(
       }
 
       notifyUploadStatus(input, "Local upload mode detected. Switching to direct upload...", 8);
-      return uploadWithXhr(file, token, input, DIRECT_UPLOAD_API_BASE_URL);
+      return uploadWithRecovery(file, token, input);
     }
     const pendingRecord: PendingUploadSessionRecord = {
       uploadId: uploadSession.upload_id,
@@ -958,17 +999,7 @@ export async function uploadDataset(
     }
   }
 
-  try {
-    return await uploadWithXhr(file, token, input, DIRECT_UPLOAD_API_BASE_URL);
-  } catch (error) {
-    if (!shouldRetryUpload(error)) {
-      throw error;
-    }
-
-    await wait(2_000);
-    await warmAnalyticsService();
-    return uploadWithXhr(file, token, input, DIRECT_UPLOAD_API_BASE_URL);
-  }
+  return uploadWithRecovery(file, token, input);
 }
 
 export function getPendingUploadSession(): PendingUploadSessionRecord | null {

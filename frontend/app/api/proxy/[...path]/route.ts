@@ -36,16 +36,6 @@ function copyResponseHeaders(response: Response): Headers {
   return headers;
 }
 
-function isUploadRoute(path: string[]): boolean {
-  const joinedPath = path.join("/");
-  return (
-    joinedPath === "api/v1/analysis/upload" ||
-    joinedPath.endsWith("/analysis/upload") ||
-    joinedPath === "api/v1/analysis/uploads/session" ||
-    joinedPath.startsWith("api/v1/analysis/uploads/")
-  );
-}
-
 function buildProxyUpstreamError(path: string[], status: number, fallback: string): string {
   if (![502, 503, 504].includes(status)) {
     return fallback;
@@ -63,16 +53,6 @@ async function forwardRequest(
   request: NextRequest,
   context: { params: { path: string[] } }
 ): Promise<Response> {
-  if (isUploadRoute(context.params.path)) {
-    return Response.json(
-      {
-        detail:
-          "Direct backend upload required. Configure NEXT_PUBLIC_DIRECT_BACKEND_API_URL to point at the FastAPI service."
-      },
-      { status: 400 }
-    );
-  }
-
   const method = request.method.toUpperCase();
   const targetUrl = buildTargetUrl(context.params.path, request.nextUrl.search);
   const timeoutMs =
