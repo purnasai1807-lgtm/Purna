@@ -19,6 +19,8 @@ const INTERNAL_PROXY_API_BASE_URL = "/api/proxy/api/v1";
 const INTERNAL_PROXY_ROOT_URL = "/api/proxy";
 const PUBLIC_API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? process.env.NEXT_PUBLIC_API_URL;
+const DEFAULT_PRODUCTION_DIRECT_BACKEND_API_BASE_URL =
+  "https://auto-analytics-ai-api.onrender.com/api/v1";
 
 function normalizeApiBaseUrl(value?: string): string {
   const trimmed = value?.replace(/\/$/, "");
@@ -43,11 +45,45 @@ function getApiRootUrl(baseUrl: string): string {
   return baseUrl.replace(/\/api\/v1$/, "");
 }
 
+function inferDirectBackendApiBaseUrl(): string | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  const hostname = window.location.hostname.toLowerCase();
+
+  if (hostname === "127.0.0.1" || hostname === "localhost") {
+    return "http://127.0.0.1:8000/api/v1";
+  }
+
+  if (hostname === "auto-analytics-ai-web.onrender.com") {
+    return DEFAULT_PRODUCTION_DIRECT_BACKEND_API_BASE_URL;
+  }
+
+  return undefined;
+}
+
+function resolveDirectUploadApiBaseUrl(): string {
+  const candidates = [
+    process.env.NEXT_PUBLIC_DIRECT_BACKEND_API_URL,
+    inferDirectBackendApiBaseUrl(),
+    process.env.NEXT_PUBLIC_API_URL,
+    API_BASE_URL
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeApiBaseUrl(candidate);
+    if (normalized !== INTERNAL_PROXY_API_BASE_URL) {
+      return normalized;
+    }
+  }
+
+  return INTERNAL_PROXY_API_BASE_URL;
+}
+
 const API_BASE_URL = normalizeApiBaseUrl(PUBLIC_API_BASE_URL);
 const API_ROOT_URL = getApiRootUrl(API_BASE_URL);
-const DIRECT_UPLOAD_API_BASE_URL = normalizeApiBaseUrl(
-  process.env.NEXT_PUBLIC_DIRECT_BACKEND_API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? API_BASE_URL
-);
+const DIRECT_UPLOAD_API_BASE_URL = resolveDirectUploadApiBaseUrl();
 const DIRECT_UPLOAD_API_ROOT_URL = getApiRootUrl(DIRECT_UPLOAD_API_BASE_URL);
 const DIRECT_UPLOAD_REQUIRES_DIRECT_BACKEND = DIRECT_UPLOAD_API_BASE_URL === INTERNAL_PROXY_API_BASE_URL;
 const DIRECT_STORAGE_UPLOADS_ENABLED = (() => {
