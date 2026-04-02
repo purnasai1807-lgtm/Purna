@@ -1,4 +1,5 @@
 from __future__ import annotations
+import hashlib
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
@@ -60,6 +61,7 @@ from app.services.storage import (
     create_stored_upload_from_existing_storage,
     delete_storage_artifacts,
     delete_stored_upload,
+    get_storage_object_metadata,
     infer_file_type,
     save_upload_to_storage,
     storage_object_exists,
@@ -251,21 +253,28 @@ def complete_upload_session(
         upload_session.error_message = None
         db.commit()
 
-        stored_upload = create_stored_upload_from_existing_storage(
-            original_filename=upload_session.original_filename,
-            content_type=upload_session.content_type,
-            storage_backend=upload_session.storage_backend,
-            storage_key=upload_session.storage_key,
-            storage_path=build_materialized_storage_path(upload_session.storage_key, upload_session.original_filename),
-            file_size_bytes=upload_session.file_size_bytes,
-        )
-        report = create_or_attach_upload_report(
-            db=db,
-            current_user=current_user,
-            stored_upload=stored_upload,
-            dataset_name=upload_session.dataset_name,
-            target_column=upload_session.target_column,
-        )
+        if upload_session.storage_backend == "s3":
+            report = create_or_attach_deferred_upload_report(
+                db=db,
+                current_user=current_user,
+                upload_session=upload_session,
+            )
+        else:
+            stored_upload = create_stored_upload_from_existing_storage(
+                original_filename=upload_session.original_filename,
+                content_type=upload_session.content_type,
+                storage_backend=upload_session.storage_backend,
+                storage_key=upload_session.storage_key,
+                storage_path=build_materialized_storage_path(upload_session.storage_key, upload_session.original_filename),
+                file_size_bytes=upload_session.file_size_bytes,
+            )
+            report = create_or_attach_upload_report(
+                db=db,
+                current_user=current_user,
+                stored_upload=stored_upload,
+                dataset_name=upload_session.dataset_name,
+                target_column=upload_session.target_column,
+            )
         report = get_owned_report(report.id, current_user.id, db)
         sync_upload_session_from_report(upload_session, report)
         db.commit()
@@ -736,6 +745,182 @@ def create_or_attach_upload_report(
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def build_upload_placeholder_payload(
+    *,
+    dataset_name: str,
+    target_column: str | None,
+    processing_mode: str,
+    file_type: str,
+    file_size_bytes: int,
+    storage_backend: str,
+) -> dict:
+    return {
+        "dataset_name": dataset_name,
+        "source_type": "upload",
+        "target_column": target_column,
+        "overview": {
+            "row_count": 0,
+            "column_count": 0,
+            "original_row_count": 0,
+            "original_column_count": 0,
+            "target_column": target_column,
+            "preview_rows": [],
+            "columns": [],
+            "detected_data_types": {},
+        },
+        "cleaning": {
+            "original_shape": {"rows": 0, "columns": 0},
+            "cleaned_shape": {"rows": 0, "columns": 0},
+            "column_mapping": {},
+            "removed_all_null_columns": [],
+            "empty_rows_dropped": 0,
+            "duplicate_rows_removed": 0,
+            "missing_values_before": 0,
+            "missing_values_after": 0,
+            "detected_data_types": {},
+        },
+        "summary_statistics": [],
+        "correlations": {
+            "available": False,
+            "columns": [],
+            "matrix": [],
+            "strongest_pairs": [],
+        },
+        "outliers": [],
+        "trends": [],
+        "charts": [],
+        "modeling": {
+            "status": "pending",
+            "mode": processing_mode,
+            "target_column": target_column,
+            "suggestions": [],
+            "reason": "Secure upload stored. Generating preview analytics now.",
+        },
+        "insights": [],
+        "recommendations": [],
+        "metadata": {
+            "is_preview": True,
+            "processing_mode": processing_mode,
+            "file_type": file_type,
+            "file_size_bytes": file_size_bytes,
+            "sample_row_count": 0,
+            "optimized_mode": processing_mode == "large",
+            "processing_strategy": (
+                "direct" if processing_mode == "small" else "chunked" if processing_mode == "medium" else "optimized_background"
+            ),
+            "sample_strategy": "deferred",
+            "max_upload_size_bytes": settings.max_upload_size_bytes,
+            "storage_backend": storage_backend,
+        },
+        "sections": build_section_status(charts_ready=False),
+    }
+
+
+def build_upload_session_content_hash(upload_session: AnalysisUploadSession) -> str:
+    object_metadata = (
+        get_storage_object_metadata(upload_session.storage_key)
+        if upload_session.storage_backend == "s3" and upload_session.storage_key
+        else None
+    )
+    etag = str((object_metadata or {}).get("ETag") or "").strip('"')
+    content_length = int((object_metadata or {}).get("ContentLength") or upload_session.file_size_bytes or 0)
+    last_modified = (object_metadata or {}).get("LastModified")
+    last_modified_value = ""
+    if hasattr(last_modified, "timestamp"):
+        last_modified_value = str(int(last_modified.timestamp()))
+    extension = Path(upload_session.original_filename).suffix.lower()
+    fingerprint_source = "|".join(
+        [
+            upload_session.storage_backend,
+            etag,
+            str(content_length),
+            last_modified_value,
+            extension,
+            upload_session.storage_key if not etag else "",
+        ]
+    )
+    return hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest()
+
+
+def create_or_attach_deferred_upload_report(
+    *,
+    db: Session,
+    current_user: User,
+    upload_session: AnalysisUploadSession,
+) -> AnalysisReport:
+    content_hash = build_upload_session_content_hash(upload_session)
+    existing_cache_entry = find_cache_entry(
+        db,
+        content_hash=content_hash,
+        target_column=upload_session.target_column,
+    )
+    if existing_cache_entry:
+        report = attach_report_to_existing_cache(
+            db,
+            current_user=current_user,
+            dataset_name=upload_session.dataset_name,
+            target_column=upload_session.target_column,
+            cache_entry=existing_cache_entry,
+        )
+        db.flush()
+        if (
+            upload_session.storage_backend == "s3"
+            and upload_session.storage_key
+            and upload_session.storage_key != existing_cache_entry.storage_key
+        ):
+            delete_storage_artifacts(
+                storage_path=None,
+                storage_backend=upload_session.storage_backend,
+                storage_key=upload_session.storage_key,
+            )
+        if existing_cache_entry.status in {"queued", "preview_ready", "processing"}:
+            job_manager.submit(existing_cache_entry.id)
+        return get_owned_report(report.id, current_user.id, db)
+
+    file_type, _ = infer_file_type(upload_session.original_filename)
+    cache_entry = AnalysisCacheEntry(
+        content_hash=content_hash,
+        original_filename=upload_session.original_filename,
+        file_type=file_type,
+        target_column=upload_session.target_column,
+        processing_mode=upload_session.processing_mode,
+        status="processing",
+        progress=18 if upload_session.processing_mode == "small" else 24 if upload_session.processing_mode == "medium" else 20,
+        progress_message="Secure upload stored. Generating preview analytics now.",
+        file_size_bytes=upload_session.file_size_bytes,
+        row_count=0,
+        column_count=0,
+        storage_backend=upload_session.storage_backend,
+        storage_key=upload_session.storage_key,
+        storage_path=str(
+            build_materialized_storage_path(upload_session.storage_key, upload_session.original_filename)
+        ),
+        preview_payload=build_upload_placeholder_payload(
+            dataset_name=upload_session.dataset_name,
+            target_column=upload_session.target_column,
+            processing_mode=upload_session.processing_mode,
+            file_type=file_type,
+            file_size_bytes=upload_session.file_size_bytes,
+            storage_backend=upload_session.storage_backend,
+        ),
+        full_payload=None,
+        sections_ready=build_section_status(charts_ready=False),
+        error_message=None,
+    )
+    db.add(cache_entry)
+    db.flush()
+    report = create_upload_report(
+        db,
+        current_user=current_user,
+        dataset_name=upload_session.dataset_name,
+        target_column=upload_session.target_column,
+        cache_entry=cache_entry,
+    )
+    db.flush()
+    job_manager.submit(cache_entry.id)
+    return get_owned_report(report.id, current_user.id, db)
 
 
 def get_owned_upload_session(upload_id: str, user_id: str, db: Session) -> AnalysisUploadSession:

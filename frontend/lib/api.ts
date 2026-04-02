@@ -373,10 +373,12 @@ function shouldRetryUploadSessionFlow(error: unknown): boolean {
     return false;
   }
 
+  const normalizedMessage = error.message.trim().toLowerCase();
   return (
     error.code === "NETWORK_ERROR" ||
     error.code === "TIMEOUT" ||
-    [502, 503, 504].includes(error.status ?? 0)
+    [502, 503, 504].includes(error.status ?? 0) ||
+    (error.status === 400 && normalizedMessage.includes("upload not found in storage yet"))
   );
 }
 
