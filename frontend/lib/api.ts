@@ -21,6 +21,12 @@ const PUBLIC_API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? process.env.NEXT_PUBLIC_API_URL;
 const DEFAULT_PRODUCTION_DIRECT_BACKEND_API_BASE_URL =
   "https://auto-analytics-ai-api.onrender.com/api/v1";
+const FALLBACK_PUBLIC_ACCESS_EMAIL =
+  process.env.NEXT_PUBLIC_PUBLIC_ACCESS_EMAIL ?? "public@autoanalytics.app";
+const FALLBACK_PUBLIC_ACCESS_FULL_NAME =
+  process.env.NEXT_PUBLIC_PUBLIC_ACCESS_FULL_NAME ?? "Public Workspace";
+const FALLBACK_PUBLIC_ACCESS_PASSWORD =
+  process.env.NEXT_PUBLIC_PUBLIC_ACCESS_PASSWORD ?? "change-this-public-password";
 
 function normalizeApiBaseUrl(value?: string): string {
   const trimmed = value?.replace(/\/$/, "");
@@ -924,6 +930,27 @@ export function loginPublicUser(): Promise<AuthResponse> {
   return request<AuthResponse>("/auth/public", {
     method: "POST",
     timeoutMs: 120_000
+  }).catch(async (error) => {
+    if (!(error instanceof ApiError) || error.status !== 404) {
+      throw error;
+    }
+
+    try {
+      return await signup({
+        full_name: FALLBACK_PUBLIC_ACCESS_FULL_NAME,
+        email: FALLBACK_PUBLIC_ACCESS_EMAIL,
+        password: FALLBACK_PUBLIC_ACCESS_PASSWORD
+      });
+    } catch (signupError) {
+      if (!(signupError instanceof ApiError) || signupError.status !== 409) {
+        throw signupError;
+      }
+
+      return login({
+        email: FALLBACK_PUBLIC_ACCESS_EMAIL,
+        password: FALLBACK_PUBLIC_ACCESS_PASSWORD
+      });
+    }
   });
 }
 
