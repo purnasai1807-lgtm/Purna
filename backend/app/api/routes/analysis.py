@@ -96,13 +96,22 @@ async def upload_analysis(
     try:
         stored_upload = await save_upload_to_storage(file)
         resolved_dataset_name = dataset_name or Path(stored_upload.original_filename).stem or "Dataset"
-        report = create_or_attach_upload_report(
-            db=db,
-            current_user=current_user,
-            stored_upload=stored_upload,
-            dataset_name=resolved_dataset_name,
-            target_column=normalized_target,
-        )
+        if stored_upload.processing_mode == "large":
+            report = create_or_attach_deferred_direct_upload_report(
+                db=db,
+                current_user=current_user,
+                stored_upload=stored_upload,
+                dataset_name=resolved_dataset_name,
+                target_column=normalized_target,
+            )
+        else:
+            report = create_or_attach_upload_report(
+                db=db,
+                current_user=current_user,
+                stored_upload=stored_upload,
+                dataset_name=resolved_dataset_name,
+                target_column=normalized_target,
+            )
         return serialize_report(report)
     except ValueError as exc:
         delete_stored_upload(stored_upload)
@@ -739,6 +748,153 @@ def create_or_attach_upload_report(
         cache_entry.id,
         cache_entry.status,
         stored_upload.processing_mode,
+    )
+    return get_owned_report(report.id, current_user.id, db)
+
+
+def create_or_attach_deferred_direct_upload_report(
+    *,
+    db: Session,
+    current_user: User,
+    stored_upload,
+    dataset_name: str,
+    target_column: str | None,
+) -> AnalysisReport:
+    logger.info(
+        "Large upload received for deferred processing: user_id=%s filename=%s size_bytes=%s type=%s",
+        current_user.id,
+        stored_upload.original_filename,
+        stored_upload.file_size_bytes,
+        stored_upload.file_type,
+    )
+
+    progress_message = "Large dataset uploaded. Processing in optimized background mode."
+    placeholder_payload = build_upload_placeholder_payload(
+        dataset_name=dataset_name,
+        target_column=target_column,
+        processing_mode=stored_upload.processing_mode,
+        file_type=stored_upload.file_type,
+        file_size_bytes=stored_upload.file_size_bytes,
+        storage_backend=stored_upload.storage_backend,
+    )
+    placeholder_payload["modeling"]["reason"] = progress_message
+
+    cache_entry = find_cache_entry(
+        db,
+        content_hash=stored_upload.content_hash,
+        target_column=target_column,
+    )
+
+    if cache_entry and cache_entry.status == "failed":
+        logger.info(
+            "Restarting failed large-upload cache entry in deferred mode: cache_entry_id=%s filename=%s",
+            cache_entry.id,
+            stored_upload.original_filename,
+        )
+        previous_storage_path = cache_entry.storage_path
+        previous_storage_backend = cache_entry.storage_backend
+        previous_storage_key = cache_entry.storage_key
+        cache_entry.original_filename = stored_upload.original_filename
+        cache_entry.file_type = stored_upload.file_type
+        cache_entry.processing_mode = stored_upload.processing_mode
+        cache_entry.status = "processing"
+        cache_entry.progress = 18
+        cache_entry.progress_message = progress_message
+        cache_entry.file_size_bytes = stored_upload.file_size_bytes
+        cache_entry.row_count = 0
+        cache_entry.column_count = 0
+        cache_entry.storage_backend = stored_upload.storage_backend
+        cache_entry.storage_key = stored_upload.storage_key
+        cache_entry.storage_path = str(stored_upload.storage_path)
+        cache_entry.parquet_path = None
+        cache_entry.celery_task_id = None
+        cache_entry.started_at = None
+        cache_entry.completed_at = None
+        cache_entry.failed_at = None
+        cache_entry.preview_payload = placeholder_payload
+        cache_entry.full_payload = None
+        cache_entry.sections_ready = placeholder_payload.get("sections", {})
+        cache_entry.error_message = None
+        report = create_upload_report(
+            db,
+            current_user=current_user,
+            dataset_name=dataset_name,
+            target_column=target_column,
+            cache_entry=cache_entry,
+        )
+        db.commit()
+        job_manager.submit(cache_entry.id)
+        if (
+            previous_storage_path != str(stored_upload.storage_path)
+            or previous_storage_key != stored_upload.storage_key
+        ):
+            delete_storage_artifacts(
+                storage_path=previous_storage_path,
+                storage_backend=previous_storage_backend,
+                storage_key=previous_storage_key,
+            )
+        return get_owned_report(report.id, current_user.id, db)
+
+    if cache_entry:
+        delete_stored_upload(stored_upload)
+        logger.info(
+            "Large upload cache hit: cache_entry_id=%s filename=%s status=%s",
+            cache_entry.id,
+            stored_upload.original_filename,
+            cache_entry.status,
+        )
+        report = attach_report_to_existing_cache(
+            db,
+            current_user=current_user,
+            dataset_name=dataset_name,
+            target_column=target_column,
+            cache_entry=cache_entry,
+        )
+        db.commit()
+        if cache_entry.status in {"queued", "preview_ready", "processing"}:
+            job_manager.submit(cache_entry.id)
+        return get_owned_report(report.id, current_user.id, db)
+
+    cache_entry = AnalysisCacheEntry(
+        content_hash=stored_upload.content_hash,
+        original_filename=stored_upload.original_filename,
+        file_type=stored_upload.file_type,
+        target_column=target_column,
+        processing_mode=stored_upload.processing_mode,
+        status="processing",
+        progress=18,
+        progress_message=progress_message,
+        file_size_bytes=stored_upload.file_size_bytes,
+        row_count=0,
+        column_count=0,
+        storage_backend=stored_upload.storage_backend,
+        storage_key=stored_upload.storage_key,
+        storage_path=str(stored_upload.storage_path),
+        parquet_path=None,
+        celery_task_id=None,
+        started_at=None,
+        completed_at=None,
+        failed_at=None,
+        preview_payload=placeholder_payload,
+        full_payload=None,
+        sections_ready=placeholder_payload.get("sections", {}),
+        error_message=None,
+    )
+    db.add(cache_entry)
+    db.flush()
+    report = create_upload_report(
+        db,
+        current_user=current_user,
+        dataset_name=dataset_name,
+        target_column=target_column,
+        cache_entry=cache_entry,
+    )
+    db.commit()
+    job_manager.submit(cache_entry.id)
+    logger.info(
+        "Deferred large upload report created: report_id=%s cache_entry_id=%s",
+        report.id,
+        cache_entry.id,
     )
     return get_owned_report(report.id, current_user.id, db)
 
