@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     secret_key: str = "change-me-in-production"
     access_token_expire_minutes: int = 1440
     public_access_enabled: bool = True
-    public_access_email: str = "public@autoanalytics.local"
+    public_access_email: str = "public@autoanalytics.app"
     public_access_full_name: str = "Public Workspace"
     public_access_password: str = "change-this-public-password"
     public_access_token_expire_minutes: int = 60 * 24 * 30

@@ -16,7 +16,7 @@ class UserLogin(BaseModel):
 
 class UserRead(BaseModel):
     id: str
-    email: EmailStr
+    email: str
     full_name: str
     created_at: datetime
 
@@ -27,4 +27,3 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserRead
-
